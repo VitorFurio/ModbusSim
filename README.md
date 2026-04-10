@@ -9,6 +9,7 @@ Simulador de dispositivo Modbus TCP com interface web para gerenciamento de regi
 - [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Como Rodar](#como-rodar)
+- [Build para Windows](#build-para-windows)
 - [Configuração](#configuração)
 - [Tipos de Registradores](#tipos-de-registradores)
 - [Tipos de Sinal](#tipos-de-sinal)
@@ -95,7 +96,76 @@ A interface de desenvolvimento estará em **http://localhost:5173**.
 ./modbussim -versions ./minhas-versoes
 ```
 
-Por padrão as versões são salvas em `./configs/`.
+Por padrão as versões são salvas no mesmo diretório do binário, dentro de `configs/`.
+
+---
+
+## Build para Windows
+
+### Opção 1 — Compilar direto no Windows
+
+Instale os pré-requisitos (Go 1.22+, Node.js 18+, Git) e execute no **PowerShell** ou **Prompt de Comando**:
+
+```powershell
+# 1. Build do frontend
+cd web
+npm install
+npm run build
+cd ..
+
+# 2. Copia o dist para o embed
+Remove-Item -Recurse -Force internal\frontend\dist -ErrorAction SilentlyContinue
+Copy-Item -Recurse web\dist internal\frontend\dist
+
+# 3. Build do binário
+go build -o modbussim.exe .\cmd\modbussim\
+
+# 4. Executar
+.\modbussim.exe
+```
+
+### Opção 2 — Cross-compile a partir do Linux ou macOS
+
+```bash
+# Build do frontend (uma vez)
+cd web && npm install && npm run build && cd ..
+rm -rf internal/frontend/dist
+cp -r web/dist internal/frontend/dist
+
+# Cross-compile para Windows 64-bit
+GOOS=windows GOARCH=amd64 go build -o modbussim.exe ./cmd/modbussim/
+```
+
+Para **Windows ARM** (Surface, etc.):
+
+```bash
+GOOS=windows GOARCH=arm64 go build -o modbussim-arm64.exe ./cmd/modbussim/
+```
+
+### Executar no Windows
+
+```powershell
+.\modbussim.exe
+```
+
+Com configuração personalizada:
+
+```powershell
+.\modbussim.exe -config minha-config.yaml
+.\modbussim.exe -versions C:\Users\usuario\modbussim-configs
+```
+
+Para parar, pressione **Ctrl+C** na janela do terminal. Se o processo ficar em background:
+
+```powershell
+# Encontrar o processo
+Get-Process modbussim
+
+# Encerrar
+Stop-Process -Name modbussim
+```
+
+> **Nota:** O Makefile requer `make` (disponível via [MSYS2](https://www.msys2.org/), [Git Bash](https://gitforwindows.org/) ou [WSL](https://learn.microsoft.com/pt-br/windows/wsl/)). Se preferir não instalar `make`, use os comandos manuais da Opção 1 acima.
 
 ---
 
