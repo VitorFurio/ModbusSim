@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"modbussim/internal/api"
@@ -18,8 +19,12 @@ import (
 )
 
 func main() {
+	// Default versions directory is relative to the binary, not the working directory,
+	// so it stays consistent regardless of how the process is launched.
+	defaultVersionsDir := defaultConfigsDir()
+
 	cfgPath := flag.String("config", "", "path to YAML config file (optional)")
-	versDir := flag.String("versions", "./configs", "directory for saved config versions")
+	versDir := flag.String("versions", defaultVersionsDir, "directory for saved config versions")
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -75,4 +80,14 @@ func main() {
 	if err := apiSrv.Start(ctx); err != nil && err != http.ErrServerClosed {
 		slog.Error("api server error", "err", err)
 	}
+}
+
+// defaultConfigsDir returns a configs directory path next to the running binary.
+// Falls back to "./configs" if the executable path cannot be determined.
+func defaultConfigsDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "./configs"
+	}
+	return filepath.Join(filepath.Dir(exe), "configs")
 }

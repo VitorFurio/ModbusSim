@@ -1,5 +1,5 @@
-# Binary
-modbussim
+# Binary (root only, not the cmd/modbussim/ source directory)
+/modbussim
 
 # Saved config snapshots (runtime-generated)
 configs/
