@@ -299,7 +299,8 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	f, err := s.static.Open(path)
 	if err != nil {
 		// Fallback to index.html for SPA routing.
-		f, err = s.static.Open("index.html")
+		path = "index.html"
+		f, err = s.static.Open(path)
 		if err != nil {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -307,13 +308,22 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
-	// Detect content type.
-	if strings.HasSuffix(path, ".js") {
-		w.Header().Set("Content-Type", "application/javascript")
-	} else if strings.HasSuffix(path, ".css") {
-		w.Header().Set("Content-Type", "text/css")
-	} else if strings.HasSuffix(path, ".html") {
-		w.Header().Set("Content-Type", "text/html")
+	// Set content type explicitly so browsers (especially Safari) handle it correctly.
+	switch {
+	case strings.HasSuffix(path, ".js"):
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	case strings.HasSuffix(path, ".css"):
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case strings.HasSuffix(path, ".html"):
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	case strings.HasSuffix(path, ".svg"):
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case strings.HasSuffix(path, ".ico"):
+		w.Header().Set("Content-Type", "image/x-icon")
+	case strings.HasSuffix(path, ".woff2"):
+		w.Header().Set("Content-Type", "font/woff2")
+	case strings.HasSuffix(path, ".woff"):
+		w.Header().Set("Content-Type", "font/woff")
 	}
 
 	data, err := io.ReadAll(f)
