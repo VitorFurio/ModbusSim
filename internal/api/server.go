@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -75,7 +76,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	srv := &http.Server{
 		Addr:    s.addr,
-		Handler: mux,
+		Handler: recoveryMiddleware(mux),
 	}
 
 	// Start WS broadcast loop.
@@ -91,6 +92,21 @@ func (s *Server) Start(ctx context.Context) error {
 
 	slog.Info("api server started", "addr", s.addr)
 	return srv.ListenAndServe()
+}
+
+// recoveryMiddleware catches panics in HTTP handlers, logs them, and returns
+// 500 instead of resetting the TCP connection (which browsers show as
+// ERR_CONNECTION_RESET / "A conexão foi redefinida").
+func recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("handler panic", "path", r.URL.Path, "panic", fmt.Sprintf("%v", rec))
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
