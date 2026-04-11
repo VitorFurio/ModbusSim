@@ -178,6 +178,27 @@ Para parar: **Ctrl+C** no terminal. Se o processo ficar em background:
 Stop-Process -Name modbussim
 ```
 
+### Troubleshooting Windows — browser não conecta (ERR_CONNECTION_RESET)
+
+O Windows Firewall pode bloquear a porta 7070. Solução mais simples — rode o build com a flag `-Firewall` **como Administrador**:
+
+```powershell
+# Abra o PowerShell como Administrador, depois:
+.\build.ps1 -Firewall
+```
+
+Isso cria automaticamente uma regra de entrada para a porta TCP 7070.
+
+Alternativamente, adicione a regra manualmente:
+
+```powershell
+# PowerShell como Administrador
+New-NetFirewallRule -DisplayName "ModbusSim HTTP 7070" `
+    -Direction Inbound -Protocol TCP -LocalPort 7070 -Action Allow
+```
+
+Ou via painel do Windows: **Windows Defender Firewall → Regras de Entrada → Nova Regra → Porta → TCP 7070 → Permitir**.
+
 ---
 
 ## Configuração
