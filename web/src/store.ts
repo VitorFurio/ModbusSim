@@ -13,10 +13,11 @@ export const useSimStore = create<SimState>((set) => ({
   registers: [],
   connected: false,
 
-  setRegisters: (regs) => set({ registers: regs }),
+  setRegisters: (regs) => set({ registers: regs ?? [] }),
 
   updateValues: (snaps) =>
     set((state) => {
+      if (!snaps || !state.registers) return {}
       const snapMap = new Map(snaps.map((s) => [s.id, s]))
       return {
         registers: state.registers.map((r) => {
@@ -26,7 +27,7 @@ export const useSimStore = create<SimState>((set) => ({
             ...r,
             value: snap.value,
             updated_at: snap.updated_at,
-            _history: snap.history,
+            _history: snap.history ?? [],
           } as Register & { _history: number[] }
         }),
       }

@@ -6,7 +6,7 @@ description: Configuracao de exemplo com todos os tipos de sinal e de dado dispo
 modbus_addr: ":5020"
 
 # Endereco da interface web de administracao
-admin_addr: ":7070"
+admin_addr: ":1254"
 
 registers:
   # ── float32 (2 words: endereco 0 e 1) ────────────────────────────────────────
