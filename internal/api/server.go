@@ -76,7 +76,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	srv := &http.Server{
 		Addr:    s.addr,
-		Handler: recoveryMiddleware(mux),
+		Handler: loggingMiddleware(recoveryMiddleware(mux)),
 	}
 
 	// Start WS broadcast loop.
@@ -94,9 +94,43 @@ func (s *Server) Start(ctx context.Context) error {
 	return srv.ListenAndServe()
 }
 
+// loggingMiddleware logs every HTTP request: method, path, status, duration.
+// WebSocket upgrades (/ws) are logged at Debug level to avoid noise.
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rw, r)
+		elapsed := time.Since(start)
+
+		level := slog.LevelDebug
+		if r.URL.Path != "/ws" {
+			level = slog.LevelInfo
+		}
+		slog.Log(r.Context(), level, "http",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rw.status,
+			"duration_ms", elapsed.Milliseconds(),
+			"remote", r.RemoteAddr,
+		)
+	})
+}
+
+// responseWriter wraps http.ResponseWriter to capture the status code.
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
 // recoveryMiddleware catches panics in HTTP handlers, logs them, and returns
 // 500 instead of resetting the TCP connection (which browsers show as
-// ERR_CONNECTION_RESET / "A conexão foi redefinida").
+// ERR_CONNECTION_RESET / "A conexao foi redefinida").
 func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
