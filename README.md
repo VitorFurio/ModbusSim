@@ -100,47 +100,64 @@ Por padrão as versões são salvas no mesmo diretório do binário, dentro de `
 
 ---
 
-## Build para Windows
+## Build por Plataforma
 
-### Opção 1 — Compilar direto no Windows
+### Cross-compile a partir do Linux ou macOS (recomendado)
 
-Instale os pré-requisitos (Go 1.22+, Node.js 18+, Git) e execute no **PowerShell** ou **Prompt de Comando**:
+O `make` compila o frontend **uma única vez** e gera o binário para a plataforma desejada:
+
+| Comando | Plataforma |
+|---|---|
+| `make build` | Sistema atual |
+| `make build-windows` | Windows x86-64 |
+| `make build-windows-arm64` | Windows ARM64 (Surface, Snapdragon X) |
+| `make build-linux` | Linux x86-64 |
+| `make build-linux-arm64` | Linux ARM64 (Raspberry Pi 4/5, servidores ARM) |
+| `make build-darwin` | macOS Intel |
+| `make build-darwin-arm64` | macOS Apple Silicon (M1/M2/M3/M4) |
+| `make build-all` | Todas as plataformas de uma vez |
+
+Exemplo — gerar binário para Windows a partir do macOS ou Linux:
+
+```bash
+make build-windows
+# → modbussim-windows-amd64.exe
+```
+
+Gerar todos os binários de uma vez:
+
+```bash
+make build-all
+# → modbussim-windows-amd64.exe
+# → modbussim-windows-arm64.exe
+# → modbussim-linux-amd64
+# → modbussim-linux-arm64
+# → modbussim-darwin-amd64
+# → modbussim-darwin-arm64
+```
+
+---
+
+### Build nativo no Windows
+
+No Windows **não há `make`** disponível por padrão. Use o script PowerShell incluído no projeto:
 
 ```powershell
-# 1. Build do frontend
-cd web
-npm install
-npm run build
-cd ..
-
-# 2. Copia o dist para o embed
-Remove-Item -Recurse -Force internal\frontend\dist -ErrorAction SilentlyContinue
-Copy-Item -Recurse web\dist internal\frontend\dist
-
-# 3. Build do binário
-go build -o modbussim.exe .\cmd\modbussim\
-
-# 4. Executar
-.\modbussim.exe
+.\build.ps1
 ```
 
-### Opção 2 — Cross-compile a partir do Linux ou macOS
+Para ARM64 (Surface, Snapdragon X):
 
-```bash
-# Build do frontend (uma vez)
-cd web && npm install && npm run build && cd ..
-rm -rf internal/frontend/dist
-cp -r web/dist internal/frontend/dist
-
-# Cross-compile para Windows 64-bit
-GOOS=windows GOARCH=amd64 go build -o modbussim.exe ./cmd/modbussim/
+```powershell
+.\build.ps1 -Arch arm64
 ```
 
-Para **Windows ARM** (Surface, etc.):
+O script verifica as dependências, compila o frontend com npm, copia o dist e gera `modbussim.exe`.
 
-```bash
-GOOS=windows GOARCH=arm64 go build -o modbussim-arm64.exe ./cmd/modbussim/
-```
+> Se a política de execução do PowerShell estiver restrita, execute primeiro:
+> ```powershell
+> Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+> ```
 
 ### Executar no Windows
 
@@ -148,24 +165,18 @@ GOOS=windows GOARCH=arm64 go build -o modbussim-arm64.exe ./cmd/modbussim/
 .\modbussim.exe
 ```
 
-Com configuração personalizada:
+Com opções:
 
 ```powershell
 .\modbussim.exe -config minha-config.yaml
 .\modbussim.exe -versions C:\Users\usuario\modbussim-configs
 ```
 
-Para parar, pressione **Ctrl+C** na janela do terminal. Se o processo ficar em background:
+Para parar: **Ctrl+C** no terminal. Se o processo ficar em background:
 
 ```powershell
-# Encontrar o processo
-Get-Process modbussim
-
-# Encerrar
 Stop-Process -Name modbussim
 ```
-
-> **Nota:** O Makefile requer `make` (disponível via [MSYS2](https://www.msys2.org/), [Git Bash](https://gitforwindows.org/) ou [WSL](https://learn.microsoft.com/pt-br/windows/wsl/)). Se preferir não instalar `make`, use os comandos manuais da Opção 1 acima.
 
 ---
 
