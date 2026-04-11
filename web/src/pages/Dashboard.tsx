@@ -61,7 +61,7 @@ function RegisterCard({ reg }: { reg: Register & { _history?: number[] } }) {
   const kind = reg.signal.kind
   const borderColor = SIGNAL_COLORS[kind] ?? 'border-slate-600'
   const badge = SIGNAL_BADGE[kind] ?? 'bg-slate-700 text-slate-300'
-  const modbusAddr = reg.address + 40001
+  const modbusAddr = reg.address
 
   const displayValue =
     reg.data_type === 'float32'

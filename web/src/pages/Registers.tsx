@@ -26,7 +26,7 @@ function emptyForm(): Omit<Register, 'value' | 'updated_at'> {
     id: '',
     name: '',
     description: '',
-    address: 40001,
+    address: 0,
     data_type: 'float32',
     unit: '',
     signal: emptySignal('constant'),
@@ -141,8 +141,7 @@ function RegisterModal({ initial, title, onClose, onSave }: ModalProps) {
     e.preventDefault()
     setSaving(true)
     setError('')
-    // Convert display address (40001+) to 0-based.
-    const payload = { ...form, address: form.address - 40001 }
+    const payload = { ...form }
     try {
       await onSave(payload)
       onClose()
@@ -204,10 +203,10 @@ function RegisterModal({ initial, title, onClose, onSave }: ModalProps) {
               <label className="block text-xs text-slate-400 mb-1">Modbus Address</label>
               <input
                 type="number"
-                min={40001}
+                min={0}
                 required
                 value={form.address}
-                onChange={(e) => set('address', parseInt(e.target.value) || 40001)}
+                onChange={(e) => set('address', parseInt(e.target.value) || 0)}
                 className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
               />
             </div>
@@ -310,7 +309,6 @@ export default function Registers() {
       mode: 'edit',
       initial: {
         ...reg,
-        address: reg.address + 40001,
       },
     })
   }
@@ -350,7 +348,7 @@ export default function Registers() {
               {registers.map((reg) => (
                 <tr key={reg.id} className="hover:bg-slate-700/30 transition-colors">
                   <td className="px-4 py-3 font-mono text-slate-400">
-                    {reg.address + 40001}
+                    {reg.address}
                   </td>
                   <td className="px-4 py-3 text-white font-medium">{reg.name}</td>
                   <td className="px-4 py-3 text-slate-400 font-mono text-xs">{reg.data_type}</td>
