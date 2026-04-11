@@ -1,5 +1,11 @@
-# Binary (root only, not the cmd/modbussim/ source directory)
+# Binaries (root only, not the cmd/modbussim/ source directory)
 /modbussim
+/modbussim-windows-amd64.exe
+/modbussim-windows-arm64.exe
+/modbussim-linux-amd64
+/modbussim-linux-arm64
+/modbussim-darwin-amd64
+/modbussim-darwin-arm64
 
 # Saved config snapshots (runtime-generated)
 configs/
