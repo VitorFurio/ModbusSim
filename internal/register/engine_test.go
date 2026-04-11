@@ -221,7 +221,7 @@ func TestEncodeValue(t *testing.T) {
 		{TypeInt16, -1, []uint16{0xFFFF}},
 		{TypeBool, 1, []uint16{1}},
 		{TypeBool, 0, []uint16{0}},
-		{TypeUint32, 65536, []uint16{1, 0}},
+		{TypeUint32, 65536, []uint16{0, 1}},
 		{TypeInt32, -1, []uint16{0xFFFF, 0xFFFF}},
 	}
 	for _, tc := range tests {

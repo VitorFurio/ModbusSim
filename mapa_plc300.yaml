@@ -15,7 +15,7 @@ registers:
 
   - id: pcf_di01_contador
     name: PCF_DI01_CONTADOR
-    address: 28040
+    address: 8040
     data_type: int32
     signal:
       kind: counter
@@ -26,7 +26,7 @@ registers:
 
   - id: pcf_di02_contador
     name: PCF_DI02_CONTADOR
-    address: 28042
+    address: 8042
     data_type: int32
     signal:
       kind: counter
@@ -37,7 +37,7 @@ registers:
 
   - id: pcf_di03_contador
     name: PCF_DI03_CONTADOR
-    address: 28044
+    address: 8044
     data_type: int32
     signal:
       kind: counter
@@ -48,7 +48,7 @@ registers:
 
   - id: pcf_di04_contador
     name: PCF_DI04_CONTADOR
-    address: 28046
+    address: 8046
     data_type: int32
     signal:
       kind: counter
@@ -59,7 +59,7 @@ registers:
 
   - id: pcf_di05_contador
     name: PCF_DI05_CONTADOR
-    address: 28048
+    address: 8048
     data_type: int32
     signal:
       kind: counter
@@ -70,7 +70,7 @@ registers:
 
   - id: pcf_di06_contador
     name: PCF_DI06_CONTADOR
-    address: 28050
+    address: 8050
     data_type: int32
     signal:
       kind: counter
@@ -81,7 +81,7 @@ registers:
 
   - id: pcf_di07_contador
     name: PCF_DI07_CONTADOR
-    address: 28052
+    address: 8052
     data_type: int32
     signal:
       kind: counter
@@ -92,7 +92,7 @@ registers:
 
   - id: pcf_di08_contador
     name: PCF_DI08_CONTADOR
-    address: 28054
+    address: 8054
     data_type: int32
     signal:
       kind: counter
@@ -103,7 +103,7 @@ registers:
 
   - id: pcf_di09_contador
     name: PCF_DI09_CONTADOR
-    address: 28056
+    address: 8056
     data_type: int32
     signal:
       kind: counter
@@ -114,7 +114,7 @@ registers:
 
   - id: pcf_di10_contador
     name: PCF_DI10_CONTADOR
-    address: 28058
+    address: 8058
     data_type: int32
     signal:
       kind: counter
@@ -128,7 +128,7 @@ registers:
 
   - id: pcf_di01_statustag
     name: PCF_DI01_STATUSTAG
-    address: 28060
+    address: 8060
     data_type: int32
     signal:
       kind: constant
@@ -136,7 +136,7 @@ registers:
 
   - id: pcf_di02_statustag
     name: PCF_DI02_STATUSTAG
-    address: 28062
+    address: 8062
     data_type: int32
     signal:
       kind: constant
@@ -144,7 +144,7 @@ registers:
 
   - id: pcf_di03_statustag
     name: PCF_DI03_STATUSTAG
-    address: 28064
+    address: 8064
     data_type: int32
     signal:
       kind: constant
@@ -152,7 +152,7 @@ registers:
 
   - id: pcf_di04_statustag
     name: PCF_DI04_STATUSTAG
-    address: 28066
+    address: 8066
     data_type: int32
     signal:
       kind: constant
@@ -160,7 +160,7 @@ registers:
 
   - id: pcf_di05_statustag
     name: PCF_DI05_STATUSTAG
-    address: 28068
+    address: 8068
     data_type: int32
     signal:
       kind: constant
@@ -168,7 +168,7 @@ registers:
 
   - id: pcf_di06_statustag
     name: PCF_DI06_STATUSTAG
-    address: 28070
+    address: 8070
     data_type: int32
     signal:
       kind: constant
@@ -176,7 +176,7 @@ registers:
 
   - id: pcf_di07_statustag
     name: PCF_DI07_STATUSTAG
-    address: 28072
+    address: 8072
     data_type: int32
     signal:
       kind: constant
@@ -184,7 +184,7 @@ registers:
 
   - id: pcf_di08_statustag
     name: PCF_DI08_STATUSTAG
-    address: 28074
+    address: 8074
     data_type: int32
     signal:
       kind: constant
@@ -192,7 +192,7 @@ registers:
 
   - id: pcf_di09_statustag
     name: PCF_DI09_STATUSTAG
-    address: 28076
+    address: 8076
     data_type: int32
     signal:
       kind: constant
@@ -200,7 +200,7 @@ registers:
 
   - id: pcf_di10_statustag
     name: PCF_DI10_STATUSTAG
-    address: 28078
+    address: 8078
     data_type: int32
     signal:
       kind: constant

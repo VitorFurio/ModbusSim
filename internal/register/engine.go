@@ -410,10 +410,10 @@ func encodeValue(v float64, dt DataType) []uint16 {
 		return []uint16{uint16(int16(v))}
 	case TypeUint32:
 		bits := uint32(v)
-		return []uint16{uint16(bits >> 16), uint16(bits & 0xFFFF)}
+		return []uint16{uint16(bits & 0xFFFF), uint16(bits >> 16)}
 	case TypeInt32:
 		bits := uint32(int32(v))
-		return []uint16{uint16(bits >> 16), uint16(bits & 0xFFFF)}
+		return []uint16{uint16(bits & 0xFFFF), uint16(bits >> 16)}
 	case TypeFloat32:
 		bits := math.Float32bits(float32(v))
 		return []uint16{uint16(bits >> 16), uint16(bits & 0xFFFF)}
