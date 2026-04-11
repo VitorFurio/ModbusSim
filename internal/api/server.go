@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -77,6 +78,20 @@ func (s *Server) Start(ctx context.Context) error {
 	srv := &http.Server{
 		Addr:    s.addr,
 		Handler: loggingMiddleware(recoveryMiddleware(mux)),
+		ConnState: func(conn net.Conn, state http.ConnState) {
+			slog.Debug("conn", "remote", conn.RemoteAddr(), "state", state.String())
+		},
+		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
+	}
+
+	// Force IPv4 to avoid dual-stack issues on Windows.
+	ln, err := net.Listen("tcp4", s.addr)
+	if err != nil {
+		// Fallback to any available stack.
+		ln, err = net.Listen("tcp", s.addr)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Start WS broadcast loop.
@@ -90,8 +105,8 @@ func (s *Server) Start(ctx context.Context) error {
 		srv.Shutdown(shutCtx)
 	}()
 
-	slog.Info("api server started", "addr", s.addr)
-	return srv.ListenAndServe()
+	slog.Info("api server started", "addr", ln.Addr().String(), "network", ln.Addr().Network())
+	return srv.Serve(ln)
 }
 
 // loggingMiddleware logs every HTTP request: method, path, status, duration.
