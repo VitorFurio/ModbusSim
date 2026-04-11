@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -141,6 +142,16 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack implements http.Hijacker so WebSocket upgrades work through the
+// logging middleware.
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := rw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("hijack not supported")
+	}
+	return hj.Hijack()
 }
 
 // recoveryMiddleware catches panics in HTTP handlers, logs them, and returns
