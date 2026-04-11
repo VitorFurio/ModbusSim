@@ -180,6 +180,19 @@ Stop-Process -Name modbussim
 
 ### Troubleshooting Windows — browser não conecta (ERR_CONNECTION_RESET)
 
+#### Passo 1 — Confirmar que o servidor esta ouvindo
+
+Antes de qualquer outra coisa, confirme que o processo está rodando e aceitando TCP:
+
+```powershell
+# Deve retornar TcpTestSucceeded: True
+Test-NetConnection -ComputerName localhost -Port 7070
+```
+
+Se retornar `False`, verifique se o executável está rodando (`Get-Process modbussim`).
+
+#### Passo 2 — Regra no Windows Firewall
+
 O Windows Firewall pode bloquear a porta 7070. Solução mais simples — rode o build com a flag `-Firewall` **como Administrador**:
 
 ```powershell
@@ -198,6 +211,31 @@ New-NetFirewallRule -DisplayName "ModbusSim HTTP 7070" `
 ```
 
 Ou via painel do Windows: **Windows Defender Firewall → Regras de Entrada → Nova Regra → Porta → TCP 7070 → Permitir**.
+
+#### Passo 3 — Antivírus / Software de segurança corporativo (EDR)
+
+Se `Test-NetConnection` retornar `True` mas o browser ainda mostrar ERR_CONNECTION_RESET, o problema é quase certamente um **software de segurança corporativo** (Windows Defender, CrowdStrike, SentinelOne, Symantec, etc.) que intercepta conexões TCP no nível do driver antes de entregá-las ao processo Go.
+
+Sintoma característico: o log do ModbusSim mostra `msg="api server started"` mas **nunca aparece** `msg=conn` nem `msg=http` — ou seja, o servidor aceita a porta mas nenhuma conexão chega ao Go.
+
+**Soluções (escolha uma):**
+
+1. **Adicionar exclusão no Windows Defender** (se for o AV ativo):
+   - Abra **Segurança do Windows → Proteção contra vírus e ameaças → Configurações → Exclusões → Adicionar exclusão**
+   - Adicione o caminho completo do executável `modbussim.exe`
+
+2. **Solicitar ao TI corporativo** uma exclusão ou permissão para o executável e as portas 5020 e 7070
+
+3. **Testar em uma máquina pessoal** (fora do domínio corporativo) para confirmar se é bloqueio de política
+
+4. **Usar uma porta diferente** — portas como 8080 ou 3000 costumam ter menos restrições em políticas corporativas:
+   ```yaml
+   # config.yaml
+   admin_addr: ":8080"
+   ```
+   ```powershell
+   .\modbussim.exe -config config.yaml
+   ```
 
 ---
 
@@ -323,6 +361,81 @@ Exemplo de mensagem recebida:
   ]
 }
 ```
+
+---
+
+## Testando o Servidor em Execução
+
+Formas de verificar se o servidor está funcionando corretamente **sem abrir o browser** e sem olhar o terminal.
+
+### Testar a API HTTP via PowerShell (Windows)
+
+```powershell
+# Verificar se a porta HTTP esta ouvindo
+Test-NetConnection -ComputerName localhost -Port 7070
+
+# Listar registradores
+Invoke-WebRequest -Uri http://localhost:7070/api/registers -UseBasicParsing
+
+# Listar registradores com saida formatada
+(Invoke-WebRequest -Uri http://localhost:7070/api/registers -UseBasicParsing).Content | ConvertFrom-Json
+
+# Verificar configuracao
+(Invoke-WebRequest -Uri http://localhost:7070/api/config -UseBasicParsing).Content | ConvertFrom-Json
+```
+
+### Testar a API HTTP via curl (Windows 10+, Linux, macOS)
+
+```bash
+# Listar registradores
+curl http://localhost:7070/api/registers
+
+# Listar registradores com saida formatada (requer jq instalado)
+curl http://localhost:7070/api/registers | jq .
+
+# Verificar configuracao
+curl http://localhost:7070/api/config
+```
+
+### Testar a porta Modbus TCP
+
+```powershell
+# Windows — verificar se a porta Modbus esta ouvindo
+Test-NetConnection -ComputerName localhost -Port 5020
+```
+
+```bash
+# Linux/macOS
+nc -zv localhost 5020
+```
+
+### Verificar processos em execucao
+
+```powershell
+# Windows — ver se o processo esta rodando e em quais portas
+netstat -ano | findstr "7070"
+netstat -ano | findstr "5020"
+Get-Process modbussim
+```
+
+```bash
+# Linux/macOS
+ss -tlnp | grep -E '7070|5020'
+```
+
+### Saida esperada de `Test-NetConnection`
+
+```
+ComputerName     : localhost
+RemoteAddress    : ::1
+RemotePort       : 7070
+InterfaceAlias   : Loopback Pseudo-Interface 1
+SourceAddress    : ::1
+TcpTestSucceeded : True
+```
+
+Se `TcpTestSucceeded: True` — o servidor esta ouvindo e aceita conexoes TCP.
+Se `TcpTestSucceeded: False` — o servidor nao esta rodando ou a porta esta bloqueada.
 
 ---
 
