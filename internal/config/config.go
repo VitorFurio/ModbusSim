@@ -138,7 +138,7 @@ func ListVersions(dir string) ([]VersionInfo, error) {
 		return nil, fmt.Errorf("read dir %s: %w", dir, err)
 	}
 
-	var versions []VersionInfo
+	versions := make([]VersionInfo, 0)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue

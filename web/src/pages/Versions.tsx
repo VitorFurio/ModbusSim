@@ -4,59 +4,73 @@ import { listVersions, loadVersion, saveConfig, exportConfig, importConfig } fro
 import { listRegisters } from '../api'
 import { useSimStore } from '../store'
 import type { VersionInfo } from '../types'
-import { Save, Upload, Download, RefreshCw } from 'lucide-react'
+import { Save, Upload, Download, RefreshCw, AlertCircle } from 'lucide-react'
 
 export default function Versions() {
   const qc = useQueryClient()
   const setRegisters = useSimStore((s) => s.setRegisters)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const { data: versions = [], isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['versions'],
     queryFn: listVersions,
-    refetchInterval: 10000,
+    refetchInterval: 15000,
+    refetchOnWindowFocus: false,
+    retry: 1,
   })
+
+  // Explicit null/undefined guard — the server may return null when the
+  // versions directory is empty (Go nil slice serialises as JSON null).
+  const versions: VersionInfo[] = Array.isArray(data) ? data : []
 
   const [confirmLoad, setConfirmLoad] = useState<VersionInfo | null>(null)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [pageError, setPageError] = useState('')
 
   const handleSave = async () => {
     const name = prompt('Snapshot name (optional):') ?? ''
     setSaving(true)
-    setError('')
+    setPageError('')
     try {
       await saveConfig(name || undefined)
-      qc.invalidateQueries({ queryKey: ['versions'] })
+      await qc.invalidateQueries({ queryKey: ['versions'] })
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e))
+      setPageError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
   }
 
   const handleLoad = async (v: VersionInfo) => {
+    setLoading(true)
+    setPageError('')
     try {
       await loadVersion(v.path)
       const regs = await listRegisters()
       setRegisters(regs)
       setConfirmLoad(null)
+      await qc.invalidateQueries({ queryKey: ['registers'] })
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e))
+      setPageError(e instanceof Error ? e.message : String(e))
+      setConfirmLoad(null)
+    } finally {
+      setLoading(false)
     }
   }
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+    setPageError('')
     const text = await file.text()
     try {
       await importConfig(text)
       const regs = await listRegisters()
       setRegisters(regs)
-      qc.invalidateQueries({ queryKey: ['versions'] })
+      await qc.invalidateQueries({ queryKey: ['versions'] })
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err))
+      setPageError(err instanceof Error ? err.message : String(err))
     }
     e.target.value = ''
   }
@@ -68,15 +82,16 @@ export default function Versions() {
         <div className="flex items-center gap-3">
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || loading}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium disabled:opacity-50"
           >
-            <Save size={15} />
-            Save Current
+            {saving ? <RefreshCw size={15} className="animate-spin" /> : <Save size={15} />}
+            {saving ? 'Saving…' : 'Save Current'}
           </button>
           <button
             onClick={() => fileRef.current?.click()}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium"
+            disabled={saving || loading}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium disabled:opacity-50"
           >
             <Upload size={15} />
             Import YAML
@@ -89,8 +104,9 @@ export default function Versions() {
             onChange={handleImport}
           />
           <button
-            onClick={() => exportConfig().catch((e: unknown) => setError(String(e)))}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium"
+            onClick={() => exportConfig().catch((e: unknown) => setPageError(String(e)))}
+            disabled={saving || loading}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium disabled:opacity-50"
           >
             <Download size={15} />
             Export
@@ -98,9 +114,10 @@ export default function Versions() {
         </div>
       </div>
 
-      {error && (
-        <div className="mb-4 bg-red-900/40 border border-red-700 text-red-300 text-sm px-3 py-2 rounded">
-          {error}
+      {pageError && (
+        <div className="mb-4 flex items-start gap-2 bg-red-900/40 border border-red-700 text-red-300 text-sm px-3 py-2 rounded">
+          <AlertCircle size={15} className="mt-0.5 shrink-0" />
+          <span>{pageError}</span>
         </div>
       )}
 
@@ -108,6 +125,19 @@ export default function Versions() {
         <div className="flex items-center justify-center py-16 text-slate-500">
           <RefreshCw className="animate-spin mr-2" size={16} />
           Loading…
+        </div>
+      ) : isError ? (
+        <div className="flex flex-col items-center justify-center py-16 gap-3 text-slate-500">
+          <AlertCircle size={32} className="text-slate-600" />
+          <p className="text-sm">
+            {error instanceof Error ? error.message : 'Failed to load versions'}
+          </p>
+          <button
+            onClick={() => refetch()}
+            className="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded"
+          >
+            Retry
+          </button>
         </div>
       ) : versions.length === 0 ? (
         <div className="text-center py-16 text-slate-500">
@@ -138,7 +168,8 @@ export default function Versions() {
                     <div className="flex items-center justify-end gap-2">
                       <button
                         onClick={() => setConfirmLoad(v)}
-                        className="text-xs px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded transition-colors"
+                        disabled={loading}
+                        className="text-xs px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded transition-colors disabled:opacity-50"
                       >
                         Load
                       </button>
@@ -163,15 +194,18 @@ export default function Versions() {
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setConfirmLoad(null)}
-                className="px-4 py-2 text-sm text-slate-400 hover:text-white"
+                disabled={loading}
+                className="px-4 py-2 text-sm text-slate-400 hover:text-white disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 onClick={() => handleLoad(confirmLoad)}
-                className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg"
+                disabled={loading}
+                className="flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg disabled:opacity-50"
               >
-                Load
+                {loading && <RefreshCw size={13} className="animate-spin" />}
+                {loading ? 'Loading…' : 'Load'}
               </button>
             </div>
           </div>
