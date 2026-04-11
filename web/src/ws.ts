@@ -2,21 +2,24 @@ import { useEffect, useRef } from 'react'
 import { useSimStore } from './store'
 import type { WSMessage } from './types'
 
-export function useWebSocket() {
+export function useWebSocket(deviceId: string | null) {
   const setConnected = useSimStore((s) => s.setConnected)
   const updateValues = useSimStore((s) => s.updateValues)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
-    // alive tracks whether this effect instance is still mounted.
-    // Prevents zombie reconnects after cleanup runs.
+    if (!deviceId) {
+      setConnected(false)
+      return
+    }
+
     let alive = true
 
     function connect() {
       if (!alive) return
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const ws = new WebSocket(`${protocol}//${window.location.host}/ws`)
+      const ws = new WebSocket(`${protocol}//${window.location.host}/ws?device=${deviceId}`)
       wsRef.current = ws
 
       ws.onopen = () => {
@@ -61,8 +64,9 @@ export function useWebSocket() {
         reconnectTimer.current = null
       }
       wsRef.current?.close()
+      wsRef.current = null
     }
-  }, [setConnected, updateValues])
+  }, [deviceId, setConnected, updateValues])
 
   return { connected: useSimStore((s) => s.connected) }
 }

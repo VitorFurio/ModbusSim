@@ -141,9 +141,8 @@ function RegisterModal({ initial, title, onClose, onSave }: ModalProps) {
     e.preventDefault()
     setSaving(true)
     setError('')
-    const payload = { ...form }
     try {
-      await onSave(payload)
+      await onSave(form)
       onClose()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
@@ -278,26 +277,33 @@ function RegisterModal({ initial, title, onClose, onSave }: ModalProps) {
 export default function Registers() {
   const registers = useSimStore((s) => s.registers)
   const setRegisters = useSimStore((s) => s.setRegisters)
+  const selectedDeviceId = useSimStore((s) => s.selectedDeviceId)
   const [modal, setModal] = useState<{
     mode: 'create' | 'edit'
     initial: Omit<Register, 'value' | 'updated_at'>
   } | null>(null)
 
-  const refresh = () => listRegisters().then(setRegisters).catch(console.error)
+  const refresh = () => {
+    if (!selectedDeviceId) return Promise.resolve()
+    return listRegisters(selectedDeviceId).then(setRegisters).catch(console.error)
+  }
 
   const handleCreate = async (r: Omit<Register, 'value' | 'updated_at'>) => {
-    await createRegister(r)
+    if (!selectedDeviceId) return
+    await createRegister(selectedDeviceId, r)
     await refresh()
   }
 
   const handleUpdate = (id: string) => async (r: Omit<Register, 'value' | 'updated_at'>) => {
-    await updateRegister(id, r)
+    if (!selectedDeviceId) return
+    await updateRegister(selectedDeviceId, id, r)
     await refresh()
   }
 
   const handleDelete = async (id: string) => {
+    if (!selectedDeviceId) return
     if (!confirm('Delete this register?')) return
-    await deleteRegister(id)
+    await deleteRegister(selectedDeviceId, id)
     await refresh()
   }
 
@@ -307,10 +313,16 @@ export default function Registers() {
   const openEdit = (reg: Register) => {
     setModal({
       mode: 'edit',
-      initial: {
-        ...reg,
-      },
+      initial: { ...reg },
     })
+  }
+
+  if (!selectedDeviceId) {
+    return (
+      <div className="flex items-center justify-center h-full text-slate-500">
+        Select a device to manage registers.
+      </div>
+    )
   }
 
   return (
