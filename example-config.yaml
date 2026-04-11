@@ -1,0 +1,157 @@
+version: "1"
+name: exemplo-planta-industrial
+description: Configuracao de exemplo com todos os tipos de sinal e de dado disponiveis
+
+# Endereco do servidor Modbus TCP (onde CLPs e supervisorios irao se conectar)
+modbus_addr: ":5020"
+
+# Endereco da interface web de administracao
+admin_addr: ":7070"
+
+registers:
+  # ── float32 (2 words: endereco 0 e 1) ────────────────────────────────────────
+
+  - id: temperature
+    name: Temperatura
+    description: Sensor de temperatura — onda senoidal entre 20 e 30 graus
+    address: 0
+    data_type: float32    # ocupa 2 words: endereco 0 e 1
+    unit: "°C"
+    signal:
+      kind: sine
+      amplitude: 5        # variacao de +/- 5 em torno do offset
+      period: 30          # periodo completo em segundos
+      offset: 25          # valor central
+      min: 20             # limite minimo (clamp)
+      max: 30             # limite maximo (clamp)
+
+  - id: pressure
+    name: Pressao
+    description: Pressao do sistema — rampa linear com retorno ao inicio
+    address: 2
+    data_type: float32    # ocupa 2 words: endereco 2 e 3
+    unit: "bar"
+    signal:
+      kind: ramp
+      rate: 0.5           # incremento por segundo
+      min: 0.0            # valor inicial (wrap)
+      max: 10.0           # valor final (wrap de volta ao min)
+
+  - id: flow
+    name: Vazao
+    description: Vazao — caminhada aleatoria (ruido realista)
+    address: 4
+    data_type: float32    # ocupa 2 words: endereco 4 e 5
+    unit: "m3/h"
+    signal:
+      kind: random_walk
+      step_max_walk: 0.5  # variacao maxima por tick
+      min: 0.0
+      max: 20.0
+
+  # ── uint16 (1 word) ───────────────────────────────────────────────────────────
+
+  - id: status_code
+    name: Codigo de Status
+    description: Codigo de status do equipamento — valor fixo
+    address: 6
+    data_type: uint16
+    signal:
+      kind: constant
+      value: 1            # 0 = parado, 1 = operando, 2 = alarme
+
+  - id: alarm_count
+    name: Contador de Alarmes
+    description: Contador incrementado a cada 5 segundos
+    address: 7
+    data_type: uint16
+    signal:
+      kind: counter
+      step_min: 1         # incremento fixo por disparo
+      interval_ms: 5000   # intervalo entre incrementos (ms)
+      min: 0
+      max: 9999           # volta a 0 ao atingir o maximo
+
+  - id: rpm
+    name: Rotacao Motor
+    description: RPM do motor — contador aleatorio (simula variacao de carga)
+    address: 8
+    data_type: uint16
+    unit: "rpm"
+    signal:
+      kind: counter_random
+      step_min: 10        # incremento minimo por disparo
+      step_max: 50        # incremento maximo por disparo
+      interval_ms: 1000
+      min: 0
+      max: 1500
+
+  - id: valve_position
+    name: Posicao Valvula
+    description: Valvula que alterna entre aberta e fechada
+    address: 9
+    data_type: uint16
+    unit: "%"
+    signal:
+      kind: step
+      low: 0              # valor "fechado"
+      high: 100           # valor "aberto"
+      period: 20          # periodo de alternancia em segundos
+
+  # ── int16 (1 word, aceita valores negativos) ──────────────────────────────────
+
+  - id: temperature_diff
+    name: Diferencial de Temperatura
+    description: Diferenca de temperatura (pode ser negativa)
+    address: 10
+    data_type: int16
+    unit: "°C"
+    signal:
+      kind: sine
+      amplitude: 10
+      period: 60
+      offset: 0
+      min: -15
+      max: 15
+
+  # ── bool (1 word: 0 ou 1) ─────────────────────────────────────────────────────
+
+  - id: pump_running
+    name: Bomba em Operacao
+    description: Estado da bomba — alterna ligado/desligado
+    address: 11
+    data_type: bool
+    signal:
+      kind: step
+      low: 0              # desligado
+      high: 1             # ligado
+      period: 15
+
+  # ── uint32 (2 words) ──────────────────────────────────────────────────────────
+
+  - id: total_volume
+    name: Volume Total
+    description: Totalizador de volume — contador crescente
+    address: 12
+    data_type: uint32     # ocupa 2 words: endereco 12 e 13
+    unit: "L"
+    signal:
+      kind: counter
+      step_min: 10
+      interval_ms: 500
+      min: 0
+      max: 4294967295     # maximo uint32
+
+  # ── int32 (2 words, aceita valores negativos) ─────────────────────────────────
+
+  - id: power_balance
+    name: Balanco de Potencia
+    description: Diferenca de potencia entre entrada e saida (pode ser negativa)
+    address: 14
+    data_type: int32      # ocupa 2 words: endereco 14 e 15
+    unit: "W"
+    signal:
+      kind: random_walk
+      step_max_walk: 100
+      min: -5000
+      max: 5000

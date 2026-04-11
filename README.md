@@ -87,13 +87,21 @@ A interface de desenvolvimento estará em **http://localhost:5173**.
 ### Com arquivo de configuração personalizado
 
 ```bash
+# Linux/macOS
 ./modbussim -config minha-config.yaml
+
+# Windows
+.\modbussim.exe -config minha-config.yaml
 ```
 
 ### Diretório de versões salvas
 
 ```bash
+# Linux/macOS
 ./modbussim -versions ./minhas-versoes
+
+# Windows
+.\modbussim.exe -versions C:\Users\usuario\modbussim-configs
 ```
 
 Por padrão as versões são salvas no mesmo diretório do binário, dentro de `configs/`.
@@ -241,40 +249,187 @@ Sintoma característico: o log do ModbusSim mostra `msg="api server started"` ma
 
 ## Configuração
 
-O simulador aceita um arquivo YAML com a seguinte estrutura:
+O simulador aceita um arquivo YAML para definir quais registradores simular, em quais endereços Modbus e com qual tipo de sinal.
+
+### Arquivo de exemplo completo
+
+O repositório inclui o arquivo `example-config.yaml` com todos os tipos de dado e de sinal disponíveis, comentado e pronto para usar como ponto de partida:
+
+```bash
+# Linux/macOS
+./modbussim -config example-config.yaml
+
+# Windows
+.\modbussim.exe -config example-config.yaml
+```
+
+### Estrutura do arquivo YAML
 
 ```yaml
 version: "1"
-name: minha-planta
-description: Exemplo de configuração
-modbus_addr: ":5020"   # endereço do servidor Modbus TCP
-admin_addr: ":7070"    # endereço da interface web
+name: minha-planta           # nome da configuração (usado nos backups)
+description: Texto livre     # opcional
+modbus_addr: ":5020"         # porta do servidor Modbus TCP
+admin_addr: ":7070"          # porta da interface web
 
 registers:
-  - id: temperature
-    name: Temperatura
-    description: Sensor de temperatura
-    address: 0          # endereço Modbus (0-based)
-    data_type: float32  # uint16 | int16 | uint32 | int32 | float32 | bool
-    unit: "°C"
+  - id: temperature          # identificador único (sem espaços)
+    name: Temperatura        # nome exibido na interface
+    description: Opcional    # descrição livre
+    address: 0               # endereço Modbus (0-based); tipos de 2 words
+                             # ocupam address e address+1
+    data_type: float32       # veja tabela abaixo
+    unit: "°C"               # unidade exibida (opcional)
     signal:
-      kind: sine
+      kind: sine             # tipo de sinal — veja tabela abaixo
       amplitude: 5
       period: 30
       offset: 25
       min: 15
       max: 35
-
-  - id: status
-    name: Status
-    address: 2
-    data_type: uint16
-    signal:
-      kind: constant
-      value: 1
 ```
 
+> **Atenção aos endereços:** tipos de 2 words (`float32`, `uint32`, `int32`) ocupam **dois** endereços Modbus consecutivos. O próximo registrador deve começar no `address + 2`.
+
 Se nenhum arquivo for informado, o simulador inicia com três registradores de exemplo (temperatura, pressão e umidade).
+
+---
+
+## Backups e Versões de Configuração
+
+O ModbusSim possui um sistema de versionamento de configurações que permite salvar, restaurar e exportar o estado do simulador a qualquer momento.
+
+### Como funciona
+
+```
+configs/                        ← diretório de versões (ao lado do binário)
+├── 20260410_143000_planta-a.yaml
+├── 20260410_152300_planta-a.yaml
+└── 20260411_090000_producao.yaml
+```
+
+Cada vez que você salva pela interface web ou pela API, um arquivo YAML com timestamp é criado no diretório de versões. O nome do arquivo segue o padrão `YYYYMMDD_HHMMSS_<nome>.yaml`.
+
+### Salvar a configuração atual (backup)
+
+**Via interface web:** aba **Config** → botão **Salvar versão**
+
+**Via API:**
+```bash
+# Salva o estado atual como nova versão
+curl -X POST http://localhost:7070/api/config/save
+
+# Salva com novo nome e descrição
+curl -X POST http://localhost:7070/api/config/save \
+  -H "Content-Type: application/json" \
+  -d '{"name": "producao", "description": "Config linha 1"}'
+```
+
+```powershell
+# Windows PowerShell
+Invoke-WebRequest -Uri http://localhost:7070/api/config/save -Method POST `
+  -ContentType "application/json" `
+  -Body '{"name": "producao", "description": "Config linha 1"}'
+```
+
+### Listar versões salvas
+
+```bash
+curl http://localhost:7070/api/versions
+```
+
+Retorno:
+```json
+[
+  {
+    "path": "/home/user/configs/20260411_090000_producao.yaml",
+    "filename": "20260411_090000_producao.yaml",
+    "saved_at": "2026-04-11T09:00:00Z",
+    "name": "producao",
+    "reg_count": 5
+  }
+]
+```
+
+### Carregar uma versão salva (restaurar backup)
+
+**Via interface web:** aba **Versions** → clique na versão desejada → **Carregar**
+
+**Via API:**
+```bash
+curl -X POST http://localhost:7070/api/versions/load \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/caminho/para/20260411_090000_producao.yaml"}'
+```
+
+> Carregar uma versão substitui **todos** os registradores em memória pelos da versão carregada. A configuração anterior não é apagada do disco — o backup anterior continua disponível.
+
+### Exportar configuração atual como YAML
+
+Baixa um arquivo `.yaml` com o estado atual (registradores + configuração):
+
+```bash
+# Salva em arquivo
+curl http://localhost:7070/api/versions/export -o minha-config.yaml
+```
+
+```powershell
+# Windows PowerShell
+Invoke-WebRequest -Uri http://localhost:7070/api/versions/export `
+  -OutFile minha-config.yaml
+```
+
+### Importar configuração via YAML
+
+Substitui a configuração em memória pelo conteúdo de um arquivo YAML:
+
+```bash
+curl -X POST http://localhost:7070/api/versions/import \
+  -H "Content-Type: application/yaml" \
+  --data-binary @minha-config.yaml
+```
+
+```powershell
+# Windows PowerShell
+$body = Get-Content minha-config.yaml -Raw
+Invoke-WebRequest -Uri http://localhost:7070/api/versions/import `
+  -Method POST -ContentType "application/yaml" -Body $body
+```
+
+### Iniciar já com uma versão específica
+
+Para carregar uma configuração salva **na inicialização** (sem passar pela interface web):
+
+```bash
+./modbussim -config configs/20260411_090000_producao.yaml
+```
+
+```powershell
+.\modbussim.exe -config configs\20260411_090000_producao.yaml
+```
+
+### Usar um diretório de versões diferente
+
+Por padrão as versões ficam em `configs/` ao lado do binário. Para usar outro diretório:
+
+```bash
+./modbussim -versions /var/modbussim/configs
+```
+
+```powershell
+.\modbussim.exe -versions C:\modbussim\configs
+```
+
+### Fluxo típico de uso
+
+```
+1. Editar registradores pela interface web
+2. Testar comunicação Modbus com o CLP/supervisório
+3. Salvar versão (POST /api/config/save)  ← cria backup com timestamp
+4. Continuar editando...
+5. Se precisar voltar: carregar versão anterior (POST /api/versions/load)
+   ou iniciar direto: ./modbussim -config configs/<arquivo>.yaml
+```
 
 ---
 
