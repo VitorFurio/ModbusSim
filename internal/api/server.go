@@ -461,14 +461,25 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read goroutine (to detect client disconnect).
+	// Read goroutine: parses incoming WebSocket frames so that PING and
+	// CLOSE are handled correctly, preventing browsers from dropping the
+	// connection due to unanswered pings.
 	go func() {
-		buf := make([]byte, 1024)
 		for {
-			if _, err := conn.Read(buf); err != nil {
+			opcode, payload, err := wsReadFrame(conn)
+			if err != nil {
 				close(client.send) // signal writer to stop
 				return
 			}
+			switch opcode {
+			case 0x9: // PING — must reply with PONG (RFC 6455 §5.5.3)
+				_ = wsWriteControl(conn, 0xA, payload)
+			case 0x8: // CLOSE — echo the frame and stop
+				_ = wsWriteControl(conn, 0x8, payload)
+				close(client.send)
+				return
+			}
+			// Text / binary / continuation frames from the client are ignored.
 		}
 	}()
 

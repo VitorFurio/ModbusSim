@@ -9,12 +9,18 @@ export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
+    // alive tracks whether this effect instance is still mounted.
+    // Prevents zombie reconnects after cleanup runs.
+    let alive = true
+
     function connect() {
+      if (!alive) return
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const ws = new WebSocket(`${protocol}//${window.location.host}/ws`)
       wsRef.current = ws
 
       ws.onopen = () => {
+        if (!alive) { ws.close(); return }
         setConnected(true)
         if (reconnectTimer.current) {
           clearTimeout(reconnectTimer.current)
@@ -23,6 +29,7 @@ export function useWebSocket() {
       }
 
       ws.onmessage = (ev) => {
+        if (!alive) return
         try {
           const msg: WSMessage = JSON.parse(ev.data as string)
           if (msg.type === 'snapshot') {
@@ -35,7 +42,9 @@ export function useWebSocket() {
 
       ws.onclose = () => {
         setConnected(false)
-        reconnectTimer.current = setTimeout(connect, 2000)
+        if (alive) {
+          reconnectTimer.current = setTimeout(connect, 2000)
+        }
       }
 
       ws.onerror = () => {
@@ -46,7 +55,11 @@ export function useWebSocket() {
     connect()
 
     return () => {
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
+      alive = false
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current)
+        reconnectTimer.current = null
+      }
       wsRef.current?.close()
     }
   }, [setConnected, updateValues])

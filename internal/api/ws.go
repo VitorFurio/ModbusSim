@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 )
@@ -56,6 +57,69 @@ func wsAcceptKey(key string) string {
 	h := sha1.New()
 	h.Write([]byte(key + wsGUID))
 	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
+
+// wsReadFrame reads one complete WebSocket frame from a client connection.
+// Client frames are always masked (RFC 6455 §5.3).
+// Returns opcode and unmasked payload, or an error on disconnect.
+func wsReadFrame(conn net.Conn) (opcode byte, payload []byte, err error) {
+	// Read first two header bytes.
+	header := make([]byte, 2)
+	if _, err = io.ReadFull(conn, header); err != nil {
+		return
+	}
+	opcode = header[0] & 0x0F
+	masked := header[1]&0x80 != 0
+	payloadLen := int(header[1] & 0x7F)
+
+	// Extended payload length.
+	switch payloadLen {
+	case 126:
+		ext := make([]byte, 2)
+		if _, err = io.ReadFull(conn, ext); err != nil {
+			return
+		}
+		payloadLen = int(binary.BigEndian.Uint16(ext))
+	case 127:
+		ext := make([]byte, 8)
+		if _, err = io.ReadFull(conn, ext); err != nil {
+			return
+		}
+		payloadLen = int(binary.BigEndian.Uint64(ext))
+	}
+
+	// Masking key.
+	var maskKey [4]byte
+	if masked {
+		if _, err = io.ReadFull(conn, maskKey[:]); err != nil {
+			return
+		}
+	}
+
+	// Payload.
+	if payloadLen > 0 {
+		payload = make([]byte, payloadLen)
+		if _, err = io.ReadFull(conn, payload); err != nil {
+			return
+		}
+		if masked {
+			for i, b := range payload {
+				payload[i] = b ^ maskKey[i%4]
+			}
+		}
+	}
+	return
+}
+
+// wsWriteControl sends a small control frame (PONG or CLOSE) to the client.
+// Control frames are never masked by the server side.
+func wsWriteControl(conn net.Conn, opcode byte, payload []byte) error {
+	frame := make([]byte, 2+len(payload))
+	frame[0] = 0x80 | opcode // FIN=1
+	frame[1] = byte(len(payload))
+	copy(frame[2:], payload)
+	_, err := conn.Write(frame)
+	return err
 }
 
 // wsWriteText sends a WebSocket text frame.
