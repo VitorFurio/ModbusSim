@@ -50,11 +50,13 @@ export interface WSMessage {
   registers: RegisterSnapshot[]
 }
 
-export interface AppConfig {
+export interface DeviceInfo {
+  id: string
   name: string
   description?: string
   modbus_addr: string
-  admin_addr: string
+  status: 'running' | 'stopped'
+  reg_count: number
 }
 
 export interface VersionInfo {

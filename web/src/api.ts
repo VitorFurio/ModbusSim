@@ -1,4 +1,4 @@
-import type { Register, AppConfig, VersionInfo } from './types'
+import type { Register, DeviceInfo, VersionInfo } from './types'
 
 async function req<T>(
   method: string,
@@ -24,37 +24,69 @@ async function req<T>(
   return res.json() as Promise<T>
 }
 
-// Registers
-export const listRegisters = () => req<Register[]>('GET', '/api/registers')
-export const createRegister = (r: Omit<Register, 'value' | 'updated_at'>) =>
-  req<Register>('POST', '/api/registers', r)
-export const updateRegister = (id: string, r: Omit<Register, 'value' | 'updated_at'>) =>
-  req<Register>('PUT', `/api/registers/${id}`, r)
-export const deleteRegister = (id: string) => req<void>('DELETE', `/api/registers/${id}`)
+const d = (id: string) => `/api/devices/${id}`
 
-// Config
-export const getConfig = () => req<AppConfig>('GET', '/api/config')
-export const saveConfig = (name?: string, description?: string) =>
-  req<{ path: string }>('POST', '/api/config/save', { name, description })
+// ── Devices ───────────────────────────────────────────────────────────────────
 
-// Versions
-export const listVersions = () => req<VersionInfo[]>('GET', '/api/versions')
-export const loadVersion = (path: string) =>
-  req<{ status: string }>('POST', '/api/versions/load', { path })
+export const listDevices = () =>
+  req<DeviceInfo[]>('GET', '/api/devices')
 
-export const exportConfig = async (): Promise<void> => {
-  const res = await fetch('/api/versions/export')
+export const createDevice = (body: { name: string; description?: string; modbus_addr?: string }) =>
+  req<DeviceInfo>('POST', '/api/devices', body)
+
+export const getDevice = (id: string) =>
+  req<DeviceInfo>('GET', d(id))
+
+export const updateDevice = (id: string, body: { name?: string; description?: string; modbus_addr?: string }) =>
+  req<DeviceInfo>('PUT', d(id), body)
+
+export const deleteDevice = (id: string) =>
+  req<void>('DELETE', d(id))
+
+export const startDevice = (id: string) =>
+  req<DeviceInfo>('POST', `${d(id)}/start`)
+
+export const stopDevice = (id: string) =>
+  req<DeviceInfo>('POST', `${d(id)}/stop`)
+
+// ── Registers (device-scoped) ─────────────────────────────────────────────────
+
+export const listRegisters = (deviceId: string) =>
+  req<Register[]>('GET', `${d(deviceId)}/registers`)
+
+export const createRegister = (deviceId: string, r: Omit<Register, 'value' | 'updated_at'>) =>
+  req<Register>('POST', `${d(deviceId)}/registers`, r)
+
+export const updateRegister = (deviceId: string, id: string, r: Omit<Register, 'value' | 'updated_at'>) =>
+  req<Register>('PUT', `${d(deviceId)}/registers/${id}`, r)
+
+export const deleteRegister = (deviceId: string, id: string) =>
+  req<void>('DELETE', `${d(deviceId)}/registers/${id}`)
+
+// ── Versions (device-scoped) ──────────────────────────────────────────────────
+
+export const saveVersion = (deviceId: string) =>
+  req<{ path: string }>('POST', `${d(deviceId)}/versions/save`)
+
+export const listVersions = (deviceId: string) =>
+  req<VersionInfo[]>('GET', `${d(deviceId)}/versions`)
+
+export const loadVersion = (deviceId: string, path: string) =>
+  req<{ status: string }>('POST', `${d(deviceId)}/versions/load`, { path })
+
+export const exportConfig = async (deviceId: string): Promise<void> => {
+  const res = await fetch(`${d(deviceId)}/versions/export`)
   if (!res.ok) throw new Error('export failed')
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = 'modbussim.yaml'
+  a.download = `${deviceId}.yaml`
   a.click()
   URL.revokeObjectURL(url)
 }
 
-export const importConfig = (yaml: string) =>
-  req<{ status: string }>('POST', '/api/versions/import', undefined, yaml, {
+export const importConfig = (deviceId: string, yaml: string) =>
+  req<{ status: string }>('POST', `${d(deviceId)}/versions/import`, undefined, yaml, {
     'Content-Type': 'application/yaml',
   })

@@ -10,276 +10,340 @@ import (
 	"testing"
 	"time"
 
-	"modbussim/internal/config"
+	"modbussim/internal/device"
 	"modbussim/internal/register"
 )
 
-// ─── Stub Engine ─────────────────────────────────────────────────────────────
+// ─── helpers ─────────────────────────────────────────────────────────────────
 
-type stubEngine struct {
-	registers []register.Register
-}
-
-func (e *stubEngine) List() []register.Register { return e.registers }
-
-func (e *stubEngine) Get(id string) (register.Register, bool) {
-	for _, r := range e.registers {
-		if r.ID == id {
-			return r, true
-		}
-	}
-	return register.Register{}, false
-}
-
-func (e *stubEngine) Add(r register.Register) (string, error) {
-	if r.ID == "" {
-		r.ID = r.Name
-	}
-	e.registers = append(e.registers, r)
-	return r.ID, nil
-}
-
-func (e *stubEngine) Update(id string, r register.Register) error {
-	for i, reg := range e.registers {
-		if reg.ID == id {
-			r.ID = id
-			e.registers[i] = r
-			return nil
-		}
-	}
-	return &notFoundErr{id}
-}
-
-func (e *stubEngine) Remove(id string) error {
-	for i, r := range e.registers {
-		if r.ID == id {
-			e.registers = append(e.registers[:i], e.registers[i+1:]...)
-			return nil
-		}
-	}
-	return &notFoundErr{id}
-}
-
-func (e *stubEngine) Subscribe() <-chan []register.RegisterSnapshot {
-	ch := make(chan []register.RegisterSnapshot, 1)
-	return ch
-}
-
-func (e *stubEngine) Unsubscribe(_ <-chan []register.RegisterSnapshot) {}
-
-type notFoundErr struct{ id string }
-
-func (e *notFoundErr) Error() string { return "register " + e.id + " not found" }
-
-// ─── Test helpers ─────────────────────────────────────────────────────────────
-
-func newTestServer(eng Engine) *Server {
-	cfg := config.Default()
-	dir, _ := os.MkdirTemp("", "api_test_*")
-	return NewServer(":0", eng, cfg, dir, nil)
-}
-
-func doRequest(t *testing.T, srv *Server, method, path string, body interface{}) *httptest.ResponseRecorder {
+func newTestManager(t *testing.T) *device.Manager {
 	t.Helper()
-	var reqBody bytes.Buffer
-	if body != nil {
-		json.NewEncoder(&reqBody).Encode(body)
-	}
-	req := httptest.NewRequest(method, path, &reqBody)
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	mux := buildMux(srv)
-	mux.ServeHTTP(w, req)
-	return w
+	devDir, _ := os.MkdirTemp("", "api_dev_*")
+	verDir, _ := os.MkdirTemp("", "api_ver_*")
+	t.Cleanup(func() {
+		os.RemoveAll(devDir)
+		os.RemoveAll(verDir)
+	})
+	return device.NewManager(devDir, verDir)
 }
 
-// buildMux replicates the route registration from Start() for unit testing.
+func newTestServer(t *testing.T) (*Server, *device.Manager) {
+	t.Helper()
+	mgr := newTestManager(t)
+	ctx := context.Background()
+	srv := NewServer(":0", mgr, ctx, nil)
+	return srv, mgr
+}
+
+func newTestServerWithDevice(t *testing.T, req device.CreateRequest) (*Server, *device.Manager, string) {
+	t.Helper()
+	srv, mgr := newTestServer(t)
+	d, err := mgr.Create(req)
+	if err != nil {
+		t.Fatalf("create device: %v", err)
+	}
+	return srv, mgr, d.ID()
+}
+
 func buildMux(s *Server) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/registers", s.handleListRegisters)
-	mux.HandleFunc("POST /api/registers", s.handleCreateRegister)
-	mux.HandleFunc("PUT /api/registers/{id}", s.handleUpdateRegister)
-	mux.HandleFunc("DELETE /api/registers/{id}", s.handleDeleteRegister)
-	mux.HandleFunc("GET /api/config", s.handleGetConfig)
-	mux.HandleFunc("POST /api/config/save", s.handleSaveConfig)
-	mux.HandleFunc("GET /api/versions", s.handleListVersions)
-	mux.HandleFunc("POST /api/versions/load", s.handleLoadVersion)
-	mux.HandleFunc("GET /api/versions/export", s.handleExportVersion)
-	mux.HandleFunc("POST /api/versions/import", s.handleImportVersion)
+	mux.HandleFunc("GET /api/devices", s.handleListDevices)
+	mux.HandleFunc("POST /api/devices", s.handleCreateDevice)
+	mux.HandleFunc("GET /api/devices/{id}", s.handleGetDevice)
+	mux.HandleFunc("PUT /api/devices/{id}", s.handleUpdateDevice)
+	mux.HandleFunc("DELETE /api/devices/{id}", s.handleDeleteDevice)
+	mux.HandleFunc("POST /api/devices/{id}/start", s.handleStartDevice)
+	mux.HandleFunc("POST /api/devices/{id}/stop", s.handleStopDevice)
+	mux.HandleFunc("GET /api/devices/{id}/registers", s.handleListRegisters)
+	mux.HandleFunc("POST /api/devices/{id}/registers", s.handleCreateRegister)
+	mux.HandleFunc("PUT /api/devices/{id}/registers/{rid}", s.handleUpdateRegister)
+	mux.HandleFunc("DELETE /api/devices/{id}/registers/{rid}", s.handleDeleteRegister)
+	mux.HandleFunc("POST /api/devices/{id}/versions/save", s.handleSaveVersion)
+	mux.HandleFunc("GET /api/devices/{id}/versions", s.handleListVersions)
+	mux.HandleFunc("POST /api/devices/{id}/versions/load", s.handleLoadVersion)
+	mux.HandleFunc("GET /api/devices/{id}/versions/export", s.handleExportVersion)
+	mux.HandleFunc("POST /api/devices/{id}/versions/import", s.handleImportVersion)
 	return mux
 }
 
-// ─── GET /api/registers ───────────────────────────────────────────────────────
+func doRequest(t *testing.T, s *Server, method, path string, body interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		json.NewEncoder(&buf).Encode(body)
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	buildMux(s).ServeHTTP(w, req)
+	return w
+}
+
+// ─── GET /api/devices ────────────────────────────────────────────────────────
+
+func TestListDevicesEmpty(t *testing.T) {
+	srv, _ := newTestServer(t)
+	w := doRequest(t, srv, "GET", "/api/devices", nil)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	var list []device.Info
+	json.NewDecoder(w.Body).Decode(&list)
+	if len(list) != 0 {
+		t.Errorf("expected empty list, got %d", len(list))
+	}
+}
+
+func TestListDevicesReturnsAll(t *testing.T) {
+	srv, mgr := newTestServer(t)
+	mgr.Create(device.CreateRequest{Name: "D1"})
+	mgr.Create(device.CreateRequest{Name: "D2"})
+
+	w := doRequest(t, srv, "GET", "/api/devices", nil)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	var list []device.Info
+	json.NewDecoder(w.Body).Decode(&list)
+	if len(list) != 2 {
+		t.Errorf("expected 2 devices, got %d", len(list))
+	}
+}
+
+// ─── POST /api/devices ───────────────────────────────────────────────────────
+
+func TestCreateDevice(t *testing.T) {
+	srv, _ := newTestServer(t)
+	w := doRequest(t, srv, "POST", "/api/devices", map[string]string{"name": "PLC"})
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201", w.Code)
+	}
+	var info device.Info
+	json.NewDecoder(w.Body).Decode(&info)
+	if info.Name != "PLC" {
+		t.Errorf("Name = %q, want PLC", info.Name)
+	}
+}
+
+func TestCreateDeviceBadJSON(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest("POST", "/api/devices", bytes.NewBufferString("not-json"))
+	w := httptest.NewRecorder()
+	srv.handleCreateDevice(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestCreateDeviceEmptyName(t *testing.T) {
+	srv, _ := newTestServer(t)
+	w := doRequest(t, srv, "POST", "/api/devices", map[string]string{"name": ""})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+// ─── GET /api/devices/{id} ───────────────────────────────────────────────────
+
+func TestGetDevice(t *testing.T) {
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+	w := doRequest(t, srv, "GET", "/api/devices/"+id, nil)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	var info device.Info
+	json.NewDecoder(w.Body).Decode(&info)
+	if info.ID != id {
+		t.Errorf("ID = %q, want %q", info.ID, id)
+	}
+}
+
+func TestGetDeviceNotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+	w := doRequest(t, srv, "GET", "/api/devices/ghost", nil)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+// ─── PUT /api/devices/{id} ───────────────────────────────────────────────────
+
+func TestUpdateDevice(t *testing.T) {
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Old"})
+	w := doRequest(t, srv, "PUT", "/api/devices/"+id, map[string]string{"name": "New"})
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	var info device.Info
+	json.NewDecoder(w.Body).Decode(&info)
+	if info.Name != "New" {
+		t.Errorf("Name = %q, want New", info.Name)
+	}
+}
+
+// ─── DELETE /api/devices/{id} ────────────────────────────────────────────────
+
+func TestDeleteDevice(t *testing.T) {
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+	w := doRequest(t, srv, "DELETE", "/api/devices/"+id, nil)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", w.Code)
+	}
+}
+
+func TestDeleteDeviceNotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+	w := doRequest(t, srv, "DELETE", "/api/devices/ghost", nil)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+// ─── POST /api/devices/{id}/start and /stop ───────────────────────────────────
+
+func TestStartStopDevice(t *testing.T) {
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{
+		Name: "Dev", ModbusAddr: ":15300",
+	})
+
+	w := doRequest(t, srv, "POST", "/api/devices/"+id+"/start", nil)
+	if w.Code != http.StatusOK {
+		t.Errorf("start status = %d, want 200", w.Code)
+	}
+	var info device.Info
+	json.NewDecoder(w.Body).Decode(&info)
+	if info.Status != device.StatusRunning {
+		t.Errorf("status = %q after start, want running", info.Status)
+	}
+
+	w = doRequest(t, srv, "POST", "/api/devices/"+id+"/stop", nil)
+	if w.Code != http.StatusOK {
+		t.Errorf("stop status = %d, want 200", w.Code)
+	}
+	var info2 device.Info
+	json.NewDecoder(w.Body).Decode(&info2)
+	if info2.Status != device.StatusStopped {
+		t.Errorf("status = %q after stop, want stopped", info2.Status)
+	}
+}
+
+// ─── GET /api/devices/{id}/registers ────────────────────────────────────────
 
 func TestListRegistersEmpty(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	w := doRequest(t, srv, "GET", "/api/registers", nil)
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+	w := doRequest(t, srv, "GET", "/api/devices/"+id+"/registers", nil)
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
 	var regs []register.Register
 	json.NewDecoder(w.Body).Decode(&regs)
 	if len(regs) != 0 {
-		t.Errorf("expected empty list, got %d", len(regs))
+		t.Errorf("expected empty registers, got %d", len(regs))
 	}
 }
 
-func TestListRegistersReturnsAll(t *testing.T) {
-	eng := &stubEngine{registers: []register.Register{
-		{ID: "r1", Name: "R1"},
-		{ID: "r2", Name: "R2"},
-	}}
-	srv := newTestServer(eng)
-	w := doRequest(t, srv, "GET", "/api/registers", nil)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", w.Code)
+func TestCreateAndListRegisters(t *testing.T) {
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+
+	body := map[string]any{
+		"id": "r1", "name": "Sensor", "address": 0, "data_type": "uint16",
+		"signal": map[string]any{"kind": "constant", "value": 42},
 	}
+	w := doRequest(t, srv, "POST", "/api/devices/"+id+"/registers", body)
+	if w.Code != http.StatusCreated {
+		t.Errorf("create status = %d, want 201", w.Code)
+	}
+
+	w = doRequest(t, srv, "GET", "/api/devices/"+id+"/registers", nil)
 	var regs []register.Register
 	json.NewDecoder(w.Body).Decode(&regs)
-	if len(regs) != 2 {
-		t.Errorf("expected 2 registers, got %d", len(regs))
+	if len(regs) != 1 {
+		t.Errorf("expected 1 register, got %d", len(regs))
 	}
 }
-
-// ─── POST /api/registers ─────────────────────────────────────────────────────
-
-func TestCreateRegister(t *testing.T) {
-	eng := &stubEngine{}
-	srv := newTestServer(eng)
-	body := map[string]interface{}{
-		"id": "r1", "name": "Sensor", "address": 0, "data_type": "uint16",
-		"signal": map[string]interface{}{"kind": "constant", "value": 42},
-	}
-	w := doRequest(t, srv, "POST", "/api/registers", body)
-	if w.Code != http.StatusCreated {
-		t.Errorf("status = %d, want 201", w.Code)
-	}
-}
-
-func TestCreateRegisterBadJSON(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	req := httptest.NewRequest("POST", "/api/registers", bytes.NewBufferString("not-json"))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	srv.handleCreateRegister(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", w.Code)
-	}
-}
-
-// ─── PUT /api/registers/{id} ─────────────────────────────────────────────────
 
 func TestUpdateRegister(t *testing.T) {
-	eng := &stubEngine{registers: []register.Register{
-		{ID: "r1", Name: "Old", Address: 0, DataType: register.TypeUint16},
-	}}
-	srv := newTestServer(eng)
-	body := map[string]interface{}{
+	srv, mgr, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+	d, _ := mgr.Get(id)
+	d.Engine().Add(register.Register{
+		ID: "r1", Name: "Old", Address: 0, DataType: register.TypeUint16,
+		Signal: register.Signal{Kind: register.SignalConstant},
+	})
+
+	body := map[string]any{
 		"name": "New", "address": 0, "data_type": "uint16",
-		"signal": map[string]interface{}{"kind": "constant", "value": 99},
+		"signal": map[string]any{"kind": "constant", "value": 99},
 	}
-	w := doRequest(t, srv, "PUT", "/api/registers/r1", body)
+	w := doRequest(t, srv, "PUT", "/api/devices/"+id+"/registers/r1", body)
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
 }
 
-func TestUpdateRegisterNotFound(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	body := map[string]interface{}{"name": "X", "address": 0, "data_type": "uint16"}
-	w := doRequest(t, srv, "PUT", "/api/registers/ghost", body)
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", w.Code)
-	}
-}
-
-// ─── DELETE /api/registers/{id} ──────────────────────────────────────────────
-
 func TestDeleteRegister(t *testing.T) {
-	eng := &stubEngine{registers: []register.Register{{ID: "r1", Name: "R1"}}}
-	srv := newTestServer(eng)
-	w := doRequest(t, srv, "DELETE", "/api/registers/r1", nil)
+	srv, mgr, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+	d, _ := mgr.Get(id)
+	d.Engine().Add(register.Register{
+		ID: "r1", Name: "R1", Address: 0, DataType: register.TypeUint16,
+		Signal: register.Signal{Kind: register.SignalConstant},
+	})
+
+	w := doRequest(t, srv, "DELETE", "/api/devices/"+id+"/registers/r1", nil)
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status = %d, want 204", w.Code)
 	}
 }
 
 func TestDeleteRegisterNotFound(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	w := doRequest(t, srv, "DELETE", "/api/registers/ghost", nil)
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+	w := doRequest(t, srv, "DELETE", "/api/devices/"+id+"/registers/ghost", nil)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
 }
 
-// ─── GET /api/config ─────────────────────────────────────────────────────────
+// ─── Versions ────────────────────────────────────────────────────────────────
 
-func TestGetConfig(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	w := doRequest(t, srv, "GET", "/api/config", nil)
+func TestSaveAndListVersionsAPI(t *testing.T) {
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+
+	w := doRequest(t, srv, "POST", "/api/devices/"+id+"/versions/save", nil)
 	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", w.Code)
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	if _, ok := body["modbus_addr"]; !ok {
-		t.Error("response missing modbus_addr field")
-	}
-	if _, ok := body["admin_addr"]; !ok {
-		t.Error("response missing admin_addr field")
-	}
-}
-
-// ─── POST /api/config/save ───────────────────────────────────────────────────
-
-func TestSaveConfig(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	body := map[string]string{"name": "saved", "description": "test save"}
-	w := doRequest(t, srv, "POST", "/api/config/save", body)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", w.Code)
+		t.Errorf("save status = %d, want 200", w.Code)
 	}
 	var resp map[string]string
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp["path"] == "" {
-		t.Error("expected non-empty path in response")
+		t.Error("expected non-empty path")
 	}
-}
 
-// ─── GET /api/versions ───────────────────────────────────────────────────────
-
-func TestListVersionsEmpty(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	w := doRequest(t, srv, "GET", "/api/versions", nil)
+	w = doRequest(t, srv, "GET", "/api/devices/"+id+"/versions", nil)
 	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", w.Code)
+		t.Errorf("list status = %d, want 200", w.Code)
 	}
 }
-
-// ─── POST /api/versions/load ─────────────────────────────────────────────────
 
 func TestLoadVersionInvalidPath(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	body := map[string]string{"path": "/nonexistent/path.yaml"}
-	w := doRequest(t, srv, "POST", "/api/versions/load", body)
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+	w := doRequest(t, srv, "POST", "/api/devices/"+id+"/versions/load",
+		map[string]string{"path": "/nonexistent.yaml"})
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
 	}
 }
 
 func TestLoadVersionMissingPath(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	w := doRequest(t, srv, "POST", "/api/versions/load", map[string]string{})
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+	w := doRequest(t, srv, "POST", "/api/devices/"+id+"/versions/load",
+		map[string]string{})
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
 	}
 }
 
-// ─── GET /api/versions/export ────────────────────────────────────────────────
-
 func TestExportVersion(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	w := doRequest(t, srv, "GET", "/api/versions/export", nil)
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+	w := doRequest(t, srv, "GET", "/api/devices/"+id+"/versions/export", nil)
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
@@ -288,18 +352,16 @@ func TestExportVersion(t *testing.T) {
 	}
 }
 
-// ─── POST /api/versions/import ───────────────────────────────────────────────
-
 func TestImportVersionValid(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	yamlData := `
-version: "1"
-name: imported
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+	yamlData := `version: "1"
+id: dev
+name: Dev
 modbus_addr: ":5020"
-admin_addr: ":7070"
 registers: []
 `
-	req := httptest.NewRequest("POST", "/api/versions/import", bytes.NewBufferString(yamlData))
+	req := httptest.NewRequest("POST", "/api/devices/"+id+"/versions/import",
+		bytes.NewBufferString(yamlData))
 	w := httptest.NewRecorder()
 	buildMux(srv).ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -308,8 +370,9 @@ registers: []
 }
 
 func TestImportVersionInvalid(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
-	req := httptest.NewRequest("POST", "/api/versions/import", bytes.NewBufferString("key: [unclosed"))
+	srv, _, id := newTestServerWithDevice(t, device.CreateRequest{Name: "Dev"})
+	req := httptest.NewRequest("POST", "/api/devices/"+id+"/versions/import",
+		bytes.NewBufferString("key: [unclosed"))
 	w := httptest.NewRecorder()
 	buildMux(srv).ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -320,7 +383,7 @@ func TestImportVersionInvalid(t *testing.T) {
 // ─── SPA fallback ─────────────────────────────────────────────────────────────
 
 func TestSPAFallbackNoStatic(t *testing.T) {
-	srv := newTestServer(&stubEngine{}) // static=nil
+	srv, _ := newTestServer(t)
 	req := httptest.NewRequest("GET", "/some/route", nil)
 	w := httptest.NewRecorder()
 	srv.handleSPA(w, req)
@@ -332,13 +395,15 @@ func TestSPAFallbackNoStatic(t *testing.T) {
 // ─── broadcastLoop ───────────────────────────────────────────────────────────
 
 func TestBroadcastLoopRunsUntilContextCancel(t *testing.T) {
-	srv := newTestServer(&stubEngine{})
+	srv, mgr := newTestServer(t)
+	d, _ := mgr.Create(device.CreateRequest{Name: "Dev"})
+
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
 	done := make(chan struct{})
 	go func() {
-		srv.broadcastLoop(ctx)
+		srv.broadcastLoop(ctx, d)
 		close(done)
 	}()
 
@@ -347,5 +412,21 @@ func TestBroadcastLoopRunsUntilContextCancel(t *testing.T) {
 		// broadcastLoop exited when ctx was cancelled — correct.
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("broadcastLoop did not exit after context cancel")
+	}
+}
+
+func TestBroadcastLoopNilCtx(t *testing.T) {
+	srv, mgr := newTestServer(t)
+	d, _ := mgr.Create(device.CreateRequest{Name: "Dev"})
+	// must not block or panic with nil ctx
+	done := make(chan struct{})
+	go func() {
+		srv.broadcastLoop(nil, d)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("broadcastLoop with nil ctx should return immediately")
 	}
 }

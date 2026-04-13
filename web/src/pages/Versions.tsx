@@ -1,7 +1,6 @@
 import { useState, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { listVersions, loadVersion, saveConfig, exportConfig, importConfig } from '../api'
-import { listRegisters } from '../api'
+import { listVersions, loadVersion, saveVersion, exportConfig, importConfig, listRegisters } from '../api'
 import { useSimStore } from '../store'
 import type { VersionInfo } from '../types'
 import { Save, Upload, Download, RefreshCw, AlertCircle } from 'lucide-react'
@@ -9,18 +8,18 @@ import { Save, Upload, Download, RefreshCw, AlertCircle } from 'lucide-react'
 export default function Versions() {
   const qc = useQueryClient()
   const setRegisters = useSimStore((s) => s.setRegisters)
+  const selectedDeviceId = useSimStore((s) => s.selectedDeviceId)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['versions'],
-    queryFn: listVersions,
+    queryKey: ['versions', selectedDeviceId],
+    queryFn: () => (selectedDeviceId ? listVersions(selectedDeviceId) : Promise.resolve([])),
+    enabled: !!selectedDeviceId,
     refetchInterval: 15000,
     refetchOnWindowFocus: false,
     retry: 1,
   })
 
-  // Explicit null/undefined guard — the server may return null when the
-  // versions directory is empty (Go nil slice serialises as JSON null).
   const versions: VersionInfo[] = Array.isArray(data) ? data : []
 
   const [confirmLoad, setConfirmLoad] = useState<VersionInfo | null>(null)
@@ -29,12 +28,12 @@ export default function Versions() {
   const [pageError, setPageError] = useState('')
 
   const handleSave = async () => {
-    const name = prompt('Snapshot name (optional):') ?? ''
+    if (!selectedDeviceId) return
     setSaving(true)
     setPageError('')
     try {
-      await saveConfig(name || undefined)
-      await qc.invalidateQueries({ queryKey: ['versions'] })
+      await saveVersion(selectedDeviceId)
+      await qc.invalidateQueries({ queryKey: ['versions', selectedDeviceId] })
     } catch (e: unknown) {
       setPageError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -43,14 +42,15 @@ export default function Versions() {
   }
 
   const handleLoad = async (v: VersionInfo) => {
+    if (!selectedDeviceId) return
     setLoading(true)
     setPageError('')
     try {
-      await loadVersion(v.path)
-      const regs = await listRegisters()
+      await loadVersion(selectedDeviceId, v.path)
+      const regs = await listRegisters(selectedDeviceId)
       setRegisters(regs)
       setConfirmLoad(null)
-      await qc.invalidateQueries({ queryKey: ['registers'] })
+      await qc.invalidateQueries({ queryKey: ['registers', selectedDeviceId] })
     } catch (e: unknown) {
       setPageError(e instanceof Error ? e.message : String(e))
       setConfirmLoad(null)
@@ -60,19 +60,28 @@ export default function Versions() {
   }
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!selectedDeviceId) return
     const file = e.target.files?.[0]
     if (!file) return
     setPageError('')
     const text = await file.text()
     try {
-      await importConfig(text)
-      const regs = await listRegisters()
+      await importConfig(selectedDeviceId, text)
+      const regs = await listRegisters(selectedDeviceId)
       setRegisters(regs)
-      await qc.invalidateQueries({ queryKey: ['versions'] })
+      await qc.invalidateQueries({ queryKey: ['versions', selectedDeviceId] })
     } catch (err: unknown) {
       setPageError(err instanceof Error ? err.message : String(err))
     }
     e.target.value = ''
+  }
+
+  if (!selectedDeviceId) {
+    return (
+      <div className="flex items-center justify-center h-full text-slate-500">
+        Select a device to manage versions.
+      </div>
+    )
   }
 
   return (
@@ -104,7 +113,9 @@ export default function Versions() {
             onChange={handleImport}
           />
           <button
-            onClick={() => exportConfig().catch((e: unknown) => setPageError(String(e)))}
+            onClick={() =>
+              exportConfig(selectedDeviceId).catch((e: unknown) => setPageError(String(e)))
+            }
             disabled={saving || loading}
             className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium disabled:opacity-50"
           >
@@ -182,7 +193,6 @@ export default function Versions() {
         </div>
       )}
 
-      {/* Confirm load dialog */}
       {confirmLoad && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="bg-slate-800 rounded-xl p-6 max-w-sm w-full shadow-2xl">

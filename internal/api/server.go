@@ -14,44 +14,30 @@ import (
 	"sync"
 	"time"
 
-	"modbussim/internal/config"
+	"modbussim/internal/device"
 	"modbussim/internal/register"
 )
 
-// Engine is the interface the API server needs.
-type Engine interface {
-	List() []register.Register
-	Get(id string) (register.Register, bool)
-	Add(r register.Register) (string, error)
-	Update(id string, r register.Register) error
-	Remove(id string) error
-	Subscribe() <-chan []register.RegisterSnapshot
-	Unsubscribe(ch <-chan []register.RegisterSnapshot)
-}
-
 // Server is the HTTP+WebSocket API server.
 type Server struct {
-	addr    string
-	eng     Engine
-	cfg     *config.Config
-	versDir string
-	static  fs.FS
-	mu      sync.RWMutex
+	addr   string
+	mgr    *device.Manager
+	appCtx context.Context
+	static fs.FS
 
-	// WS hub
+	// WS hub: device ID -> set of clients
 	hubMu   sync.Mutex
-	clients map[*wsClient]struct{}
+	clients map[string]map[*wsClient]struct{}
 }
 
 // NewServer creates a new API server.
-func NewServer(addr string, eng Engine, cfg *config.Config, versDir string, static fs.FS) *Server {
+func NewServer(addr string, mgr *device.Manager, appCtx context.Context, static fs.FS) *Server {
 	return &Server{
 		addr:    addr,
-		eng:     eng,
-		cfg:     cfg,
-		versDir: versDir,
+		mgr:     mgr,
+		appCtx:  appCtx,
 		static:  static,
-		clients: make(map[*wsClient]struct{}),
+		clients: make(map[string]map[*wsClient]struct{}),
 	}
 }
 
@@ -59,19 +45,27 @@ func NewServer(addr string, eng Engine, cfg *config.Config, versDir string, stat
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 
-	// Register routes.
-	mux.HandleFunc("GET /api/registers", s.handleListRegisters)
-	mux.HandleFunc("POST /api/registers", s.handleCreateRegister)
-	mux.HandleFunc("PUT /api/registers/{id}", s.handleUpdateRegister)
-	mux.HandleFunc("DELETE /api/registers/{id}", s.handleDeleteRegister)
+	// Device management
+	mux.HandleFunc("GET /api/devices", s.handleListDevices)
+	mux.HandleFunc("POST /api/devices", s.handleCreateDevice)
+	mux.HandleFunc("GET /api/devices/{id}", s.handleGetDevice)
+	mux.HandleFunc("PUT /api/devices/{id}", s.handleUpdateDevice)
+	mux.HandleFunc("DELETE /api/devices/{id}", s.handleDeleteDevice)
+	mux.HandleFunc("POST /api/devices/{id}/start", s.handleStartDevice)
+	mux.HandleFunc("POST /api/devices/{id}/stop", s.handleStopDevice)
 
-	mux.HandleFunc("GET /api/config", s.handleGetConfig)
-	mux.HandleFunc("POST /api/config/save", s.handleSaveConfig)
+	// Per-device registers
+	mux.HandleFunc("GET /api/devices/{id}/registers", s.handleListRegisters)
+	mux.HandleFunc("POST /api/devices/{id}/registers", s.handleCreateRegister)
+	mux.HandleFunc("PUT /api/devices/{id}/registers/{rid}", s.handleUpdateRegister)
+	mux.HandleFunc("DELETE /api/devices/{id}/registers/{rid}", s.handleDeleteRegister)
 
-	mux.HandleFunc("GET /api/versions", s.handleListVersions)
-	mux.HandleFunc("POST /api/versions/load", s.handleLoadVersion)
-	mux.HandleFunc("GET /api/versions/export", s.handleExportVersion)
-	mux.HandleFunc("POST /api/versions/import", s.handleImportVersion)
+	// Per-device versions
+	mux.HandleFunc("POST /api/devices/{id}/versions/save", s.handleSaveVersion)
+	mux.HandleFunc("GET /api/devices/{id}/versions", s.handleListVersions)
+	mux.HandleFunc("POST /api/devices/{id}/versions/load", s.handleLoadVersion)
+	mux.HandleFunc("GET /api/devices/{id}/versions/export", s.handleExportVersion)
+	mux.HandleFunc("POST /api/devices/{id}/versions/import", s.handleImportVersion)
 
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/", s.handleSPA)
@@ -85,18 +79,21 @@ func (s *Server) Start(ctx context.Context) error {
 		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
 	}
 
-	// Force IPv4 to avoid dual-stack issues on Windows.
 	ln, err := net.Listen("tcp4", s.addr)
 	if err != nil {
-		// Fallback to any available stack.
 		ln, err = net.Listen("tcp", s.addr)
 		if err != nil {
 			return err
 		}
 	}
 
-	// Start WS broadcast loop.
-	go s.broadcastLoop(ctx)
+	// Launch broadcast loops for all currently running devices.
+	for _, info := range s.mgr.List() {
+		d, ok := s.mgr.Get(info.ID)
+		if ok && d.GetStatus() == device.StatusRunning {
+			go s.broadcastLoop(d.RunCtx(), d)
+		}
+	}
 
 	// Shutdown on ctx cancel.
 	go func() {
@@ -110,156 +107,156 @@ func (s *Server) Start(ctx context.Context) error {
 	return srv.Serve(ln)
 }
 
-// loggingMiddleware logs every HTTP request: method, path, status, duration.
-// WebSocket upgrades (/ws) are logged at Debug level to avoid noise.
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rw, r)
-		elapsed := time.Since(start)
-
-		level := slog.LevelDebug
-		if r.URL.Path != "/ws" {
-			level = slog.LevelInfo
-		}
-		slog.Log(r.Context(), level, "http",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", rw.status,
-			"duration_ms", elapsed.Milliseconds(),
-			"remote", r.RemoteAddr,
-		)
-	})
-}
-
-// responseWriter wraps http.ResponseWriter to capture the status code.
-type responseWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.status = code
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-// Hijack implements http.Hijacker so WebSocket upgrades work through the
-// logging middleware.
-func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	hj, ok := rw.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("hijack not supported")
-	}
-	return hj.Hijack()
-}
-
-// recoveryMiddleware catches panics in HTTP handlers, logs them, and returns
-// 500 instead of resetting the TCP connection (which browsers show as
-// ERR_CONNECTION_RESET / "A conexao foi redefinida").
-func recoveryMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				slog.Error("handler panic", "path", r.URL.Path, "panic", fmt.Sprintf("%v", rec))
-				http.Error(w, "internal server error", http.StatusInternalServerError)
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
-}
-
-// ─── helpers ────────────────────────────────────────────────────────────────
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-// ─── Register handlers ───────────────────────────────────────────────────────
-
-func (s *Server) handleListRegisters(w http.ResponseWriter, r *http.Request) {
-	regs := s.eng.List()
-	writeJSON(w, http.StatusOK, regs)
-}
-
-func (s *Server) handleCreateRegister(w http.ResponseWriter, r *http.Request) {
-	var reg register.Register
-	if err := json.NewDecoder(r.Body).Decode(&reg); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	id, err := s.eng.Add(reg)
-	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	got, _ := s.eng.Get(id)
-	writeJSON(w, http.StatusCreated, got)
-}
-
-func (s *Server) handleUpdateRegister(w http.ResponseWriter, r *http.Request) {
+// deviceFromRequest extracts the device from the path value "id".
+func (s *Server) deviceFromRequest(w http.ResponseWriter, r *http.Request) (*device.Device, bool) {
 	id := r.PathValue("id")
-	var reg register.Register
-	if err := json.NewDecoder(r.Body).Decode(&reg); err != nil {
+	d, ok := s.mgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("device %q not found", id))
+	}
+	return d, ok
+}
+
+// ─── Device handlers ─────────────────────────────────────────────────────────
+
+func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.mgr.List())
+}
+
+func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
+	var req device.CreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.eng.Update(id, reg); err != nil {
+	d, err := s.mgr.Create(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, d.Info())
+}
+
+func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.deviceFromRequest(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, d.Info())
+}
+
+func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req device.UpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.mgr.Update(id, req); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	got, _ := s.eng.Get(id)
-	writeJSON(w, http.StatusOK, got)
+	d, _ := s.mgr.Get(id)
+	writeJSON(w, http.StatusOK, d.Info())
 }
 
-func (s *Server) handleDeleteRegister(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := s.eng.Remove(id); err != nil {
+	if err := s.mgr.Delete(id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ─── Config handlers ─────────────────────────────────────────────────────────
-
-func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	cfg := *s.cfg
-	s.mu.RUnlock()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"name":        cfg.Name,
-		"description": cfg.Description,
-		"modbus_addr": cfg.ModbusAddr,
-		"admin_addr":  cfg.AdminAddr,
-	})
+func (s *Server) handleStartDevice(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.deviceFromRequest(w, r)
+	if !ok {
+		return
+	}
+	if err := d.Start(s.appCtx); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	go s.broadcastLoop(d.RunCtx(), d)
+	writeJSON(w, http.StatusOK, d.Info())
 }
 
-func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
+func (s *Server) handleStopDevice(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.deviceFromRequest(w, r)
+	if !ok {
+		return
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	d.Stop()
+	writeJSON(w, http.StatusOK, d.Info())
+}
 
-	s.mu.Lock()
-	if body.Name != "" {
-		s.cfg.Name = body.Name
-	}
-	if body.Description != "" {
-		s.cfg.Description = body.Description
-	}
-	s.cfg.Registers = s.eng.List()
-	cfgCopy := *s.cfg
-	s.mu.Unlock()
+// ─── Register handlers ───────────────────────────────────────────────────────
 
-	path, err := config.Save(&cfgCopy, s.versDir)
+func (s *Server) handleListRegisters(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.deviceFromRequest(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, d.Engine().List())
+}
+
+func (s *Server) handleCreateRegister(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.deviceFromRequest(w, r)
+	if !ok {
+		return
+	}
+	var reg register.Register
+	if err := json.NewDecoder(r.Body).Decode(&reg); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	id, err := d.Engine().Add(reg)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	got, _ := d.Engine().Get(id)
+	writeJSON(w, http.StatusCreated, got)
+}
+
+func (s *Server) handleUpdateRegister(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.deviceFromRequest(w, r)
+	if !ok {
+		return
+	}
+	rid := r.PathValue("rid")
+	var reg register.Register
+	if err := json.NewDecoder(r.Body).Decode(&reg); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := d.Engine().Update(rid, reg); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	got, _ := d.Engine().Get(rid)
+	writeJSON(w, http.StatusOK, got)
+}
+
+func (s *Server) handleDeleteRegister(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.deviceFromRequest(w, r)
+	if !ok {
+		return
+	}
+	rid := r.PathValue("rid")
+	if err := d.Engine().Remove(rid); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ─── Version handlers ─────────────────────────────────────────────────────────
+
+func (s *Server) handleSaveVersion(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	path, err := s.mgr.SaveVersion(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -267,18 +264,18 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"path": path})
 }
 
-// ─── Version handlers ─────────────────────────────────────────────────────────
-
 func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
-	versions, err := config.ListVersions(s.versDir)
+	id := r.PathValue("id")
+	versions, err := s.mgr.ListVersions(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, versions)
 }
 
 func (s *Server) handleLoadVersion(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	var body struct {
 		Path string `json:"path"`
 	}
@@ -286,75 +283,38 @@ func (s *Server) handleLoadVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "path required")
 		return
 	}
-	cfg, err := config.Load(body.Path)
-	if err != nil {
+	if err := s.mgr.LoadVersion(id, body.Path); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	// Remove all existing registers.
-	existing := s.eng.List()
-	for _, reg := range existing {
-		s.eng.Remove(reg.ID)
-	}
-
-	// Add new registers.
-	for _, reg := range cfg.Registers {
-		if _, err := s.eng.Add(reg); err != nil {
-			slog.Warn("load version: skip register", "id", reg.ID, "err", err)
-		}
-	}
-
-	s.mu.Lock()
-	s.cfg = cfg
-	s.mu.Unlock()
-
 	writeJSON(w, http.StatusOK, map[string]string{"status": "loaded"})
 }
 
 func (s *Server) handleExportVersion(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	cfgCopy := *s.cfg
-	s.mu.RUnlock()
-	cfgCopy.Registers = s.eng.List()
-
-	data, err := config.Export(&cfgCopy)
+	id := r.PathValue("id")
+	data, err := s.mgr.ExportDevice(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	d, _ := s.mgr.Get(id)
+	filename := d.ID() + ".yaml"
 	w.Header().Set("Content-Type", "application/yaml")
-	w.Header().Set("Content-Disposition", `attachment; filename="modbussim.yaml"`)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	w.Write(data)
 }
 
 func (s *Server) handleImportVersion(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	cfg, err := config.Import(data)
-	if err != nil {
+	if err := s.mgr.ImportDevice(id, data); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	// Replace all registers.
-	existing := s.eng.List()
-	for _, reg := range existing {
-		s.eng.Remove(reg.ID)
-	}
-	for _, reg := range cfg.Registers {
-		if _, err := s.eng.Add(reg); err != nil {
-			slog.Warn("import: skip register", "id", reg.ID, "err", err)
-		}
-	}
-
-	s.mu.Lock()
-	s.cfg = cfg
-	s.mu.Unlock()
-
 	writeJSON(w, http.StatusOK, map[string]string{"status": "imported"})
 }
 
@@ -371,10 +331,8 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 		path = "index.html"
 	}
 
-	// Try to open the file.
 	f, err := s.static.Open(path)
 	if err != nil {
-		// Fallback to index.html for SPA routing.
 		path = "index.html"
 		f, err = s.static.Open(path)
 		if err != nil {
@@ -384,7 +342,6 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
-	// Set content type explicitly so browsers (especially Safari) handle it correctly.
 	switch {
 	case strings.HasSuffix(path, ".js"):
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
@@ -417,8 +374,16 @@ type wsClient struct {
 	done chan struct{}
 }
 
+// handleWS upgrades to WebSocket and streams snapshots for the requested device.
+// The device is specified via ?device=<id> query parameter.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	// Minimal WebSocket handshake without external deps.
+	deviceID := r.URL.Query().Get("device")
+	dev, ok := s.mgr.Get(deviceID)
+	if !ok {
+		http.Error(w, fmt.Sprintf("device %q not found", deviceID), http.StatusNotFound)
+		return
+	}
+
 	conn, err := upgradeWS(w, r)
 	if err != nil {
 		slog.Warn("ws upgrade failed", "err", err)
@@ -432,18 +397,21 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.hubMu.Lock()
-	s.clients[client] = struct{}{}
+	if s.clients[deviceID] == nil {
+		s.clients[deviceID] = make(map[*wsClient]struct{})
+	}
+	s.clients[deviceID][client] = struct{}{}
 	s.hubMu.Unlock()
 
 	defer func() {
 		s.hubMu.Lock()
-		delete(s.clients, client)
+		delete(s.clients[deviceID], client)
 		s.hubMu.Unlock()
 		close(client.done)
 	}()
 
 	// Send initial snapshot.
-	regs := s.eng.List()
+	regs := dev.Engine().List()
 	snapshots := make([]map[string]any, 0, len(regs))
 	for _, reg := range regs {
 		snapshots = append(snapshots, map[string]any{
@@ -461,25 +429,22 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read goroutine: parses incoming WebSocket frames so that PING and
-	// CLOSE are handled correctly, preventing browsers from dropping the
-	// connection due to unanswered pings.
+	// Read goroutine handles PING/CLOSE frames.
 	go func() {
 		for {
 			opcode, payload, err := wsReadFrame(conn)
 			if err != nil {
-				close(client.send) // signal writer to stop
+				close(client.send)
 				return
 			}
 			switch opcode {
-			case 0x9: // PING — must reply with PONG (RFC 6455 §5.5.3)
+			case 0x9: // PING
 				_ = wsWriteControl(conn, 0xA, payload)
-			case 0x8: // CLOSE — echo the frame and stop
+			case 0x8: // CLOSE
 				_ = wsWriteControl(conn, 0x8, payload)
 				close(client.send)
 				return
 			}
-			// Text / binary / continuation frames from the client are ignored.
 		}
 	}()
 
@@ -491,10 +456,17 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// broadcastLoop subscribes to engine updates and fans out to WS clients.
-func (s *Server) broadcastLoop(ctx context.Context) {
-	ch := s.eng.Subscribe()
-	defer s.eng.Unsubscribe(ch)
+// broadcastLoop subscribes to a device's engine and fans snapshots out to
+// all WebSocket clients connected to that device.
+// It runs until ctx is cancelled (i.e. the device stops).
+func (s *Server) broadcastLoop(ctx context.Context, dev *device.Device) {
+	if ctx == nil {
+		return
+	}
+	deviceID := dev.ID()
+	eng := dev.Engine()
+	ch := eng.Subscribe()
+	defer eng.Unsubscribe(ch)
 
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -530,7 +502,7 @@ func (s *Server) broadcastLoop(ctx context.Context) {
 				continue
 			}
 			s.hubMu.Lock()
-			for client := range s.clients {
+			for client := range s.clients[deviceID] {
 				select {
 				case client.send <- msg:
 				default:
@@ -540,4 +512,69 @@ func (s *Server) broadcastLoop(ctx context.Context) {
 			s.hubMu.Unlock()
 		}
 	}
+}
+
+// ─── Middleware ───────────────────────────────────────────────────────────────
+
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rw, r)
+		elapsed := time.Since(start)
+
+		level := slog.LevelDebug
+		if r.URL.Path != "/ws" {
+			level = slog.LevelInfo
+		}
+		slog.Log(r.Context(), level, "http",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rw.status,
+			"duration_ms", elapsed.Milliseconds(),
+			"remote", r.RemoteAddr,
+		)
+	})
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := rw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("hijack not supported")
+	}
+	return hj.Hijack()
+}
+
+func recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("handler panic", "path", r.URL.Path, "panic", fmt.Sprintf("%v", rec))
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
 }
