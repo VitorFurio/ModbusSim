@@ -2,17 +2,12 @@ version: "1"
 name: mapa_plc300
 description: Mapa Modbus WEG PLC300 — contadores PCF_DI01-DI10 e status tags
 
-# Enderecos wire diretos (usados diretamente no FC03), conforme mapa do PLC300.
-# Todos os registradores sao DINT (32 bits = int32 = 2 words Modbus consecutivos).
 modbus_addr: ":5020"
 admin_addr: ":1254"
 
 registers:
 
   # ── Contadores PCF_DI01 a DI10 ───────────────────────────────────────────────
-  # Cada DINT ocupa 2 words consecutivos: DI01 usa offsets 28040-28041, etc.
-  # Sinal: counter incrementando 1 a cada segundo, limite 1.000.000.000.
-
   - id: pcf_di01_contador
     name: PCF_DI01_CONTADOR
     address: 28040
@@ -124,8 +119,6 @@ registers:
       max: 1000000000
 
   # ── Status Tags PCF_DI01 a DI10 ──────────────────────────────────────────────
-  # Sinal: constante 0 (sem alarme / sem falha).
-
   - id: pcf_di01_statustag
     name: PCF_DI01_STATUSTAG
     address: 28060
